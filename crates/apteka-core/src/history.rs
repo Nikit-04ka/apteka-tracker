@@ -149,6 +149,10 @@ mod tests {
                 month_only: true,
                 quantity: "1 уп.".into(),
                 note: String::new(),
+                price: None,
+                opened: None,
+                open_period_days: None,
+                disposed: None,
             }],
         });
         h.commit(db);

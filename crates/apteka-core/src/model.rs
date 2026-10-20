@@ -23,12 +23,33 @@ pub const STATUS_OK: i32 = 0;
 pub const STATUS_SOON: i32 = 1;
 pub const STATUS_EXPIRED: i32 = 2;
 pub const STATUS_EMPTY: i32 = 3;
+pub const STATUS_DISPOSED: i32 = 4;
 
-/// Одна упаковка лекарства со своим сроком годности.
+/// Причина списания упаковки.
+pub const REASON_USED: i32 = 0;
+pub const REASON_EXPIRED: i32 = 1;
+
+/// Факт списания упаковки (израсходована или выброшена).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DisposedInfo {
+    pub date: NaiveDate,
+    pub reason: i32,
+}
+
+pub fn dispose_reason_text(reason: i32) -> &'static str {
+    match reason {
+        REASON_USED => "израсходовано",
+        REASON_EXPIRED => "просрочено, выброшено",
+        _ => "списано",
+    }
+}
+
+/// Одна упаковка лекарства со своим сроком годности и жизненным циклом:
+/// запечатана → открыта → списана.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Package {
     pub id: i32,
-    /// Дата окончания срока. Для `month_only` — последний день указанного месяца.
+    /// Заводской срок годности. Для `month_only` — последний день указанного месяца.
     pub expiry: NaiveDate,
     /// Производитель указал только месяц и год («Годен до 01 2028»):
     /// препарат годен до конца этого месяца.
@@ -38,6 +59,40 @@ pub struct Package {
     pub quantity: String,
     #[serde(default)]
     pub note: String,
+    /// Цена упаковки при покупке, руб. (None — не указана).
+    #[serde(default)]
+    pub price: Option<f64>,
+    /// Дата вскрытия (None — запечатана).
+    #[serde(default)]
+    pub opened: Option<NaiveDate>,
+    /// Период после вскрытия, дней (напр. 30 для глазных капель, 180 для сиропа).
+    #[serde(default)]
+    pub open_period_days: Option<i32>,
+    /// Списание — упаковка скрыта из активного учёта, но остаётся в базе.
+    #[serde(default)]
+    pub disposed: Option<DisposedInfo>,
+}
+
+impl Package {
+    pub fn is_disposed(&self) -> bool {
+        self.disposed.is_some()
+    }
+
+    /// Реальный срок годности: заводской, а при вскрытии с периодом —
+    /// более ранний из «заводского» и «вскрытие + период».
+    pub fn effective_expiry(&self) -> NaiveDate {
+        match (self.opened, self.open_period_days) {
+            (Some(opened), Some(days)) => {
+                let after_open = opened + chrono::Duration::days(days as i64);
+                if after_open < self.expiry {
+                    after_open
+                } else {
+                    self.expiry
+                }
+            }
+            _ => self.expiry,
+        }
+    }
 }
 
 /// Лекарство. Может содержать несколько упаковок с разными сроками.
@@ -53,6 +108,15 @@ pub struct Medicine {
     pub packages: Vec<Package>,
 }
 
+/// Событие журнала: что и когда произошло с лекарством/упаковкой.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JournalEvent {
+    pub at: chrono::NaiveDateTime,
+    pub kind: String,
+    pub medicine: String,
+    pub package: String,
+}
+
 /// Всё, что сохраняется на диск (JSON рядом с exe).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Database {
@@ -63,6 +127,9 @@ pub struct Database {
     pub next_pkg_id: i32,
     #[serde(default)]
     pub medicines: Vec<Medicine>,
+    /// Журнал событий (хранятся последние 400).
+    #[serde(default)]
+    pub events: Vec<JournalEvent>,
 }
 
 impl Default for Database {
@@ -73,6 +140,7 @@ impl Default for Database {
             next_med_id: 1,
             next_pkg_id: 1,
             medicines: Vec::new(),
+            events: Vec::new(),
         }
     }
 }
@@ -96,6 +164,19 @@ impl Database {
 
     pub fn medicine_mut(&mut self, id: i32) -> Option<&mut Medicine> {
         self.medicines.iter_mut().find(|m| m.id == id)
+    }
+
+    /// Добавляет событие в журнал (хранятся последние 400).
+    pub fn journal_push(&mut self, kind: &str, medicine: &str, package: &str) {
+        self.events.push(JournalEvent {
+            at: chrono::Local::now().naive_local(),
+            kind: kind.to_string(),
+            medicine: medicine.to_string(),
+            package: package.to_string(),
+        });
+        if self.events.len() > 400 {
+            self.events.remove(0);
+        }
     }
 }
 
@@ -193,6 +274,7 @@ pub fn status_text(status: i32, days: i64) -> String {
         STATUS_SOON if days == 0 => "истекает сегодня".to_string(),
         STATUS_SOON => format!("истекает через {} дн.", days),
         STATUS_OK => format!("годен ещё {} дн.", days),
+        STATUS_DISPOSED => "списано".to_string(),
         _ => "нет упаковок".to_string(),
     }
 }
@@ -208,9 +290,14 @@ pub fn days_short(status: i32, days: i64) -> String {
     }
 }
 
-/// Худший статус по всем упаковкам и ближайшая дата окончания срока.
+/// Худший статус по всем АКТИВНЫМ (не списанным) упаковкам
+/// и ближайшая дата окончания срока.
 pub fn medicine_info(m: &Medicine, today: NaiveDate, warn_days: i64) -> MedInfo {
-    let nearest_pkg = m.packages.iter().min_by_key(|p| p.expiry);
+    let nearest_pkg = m
+        .packages
+        .iter()
+        .filter(|p| !p.is_disposed())
+        .min_by_key(|p| p.effective_expiry());
     match nearest_pkg {
         None => MedInfo {
             status: STATUS_EMPTY,
@@ -219,12 +306,14 @@ pub fn medicine_info(m: &Medicine, today: NaiveDate, warn_days: i64) -> MedInfo 
             nearest_month_only: false,
         },
         Some(p) => {
-            let days = days_left(p.expiry, today);
+            let eff = p.effective_expiry();
+            let days = days_left(eff, today);
             MedInfo {
                 status: status_for(days, warn_days),
-                nearest: Some(p.expiry),
+                nearest: Some(eff),
                 nearest_days: days,
-                nearest_month_only: p.month_only,
+                // месячный формат показа уместен, пока действует заводской срок
+                nearest_month_only: p.month_only && eff == p.expiry,
             }
         }
     }
@@ -245,6 +334,10 @@ mod tests {
             month_only,
             quantity: String::new(),
             note: String::new(),
+            price: None,
+            opened: None,
+            open_period_days: None,
+            disposed: None,
         }
     }
 
@@ -356,6 +449,64 @@ mod tests {
         let info = medicine_info(&m, d("2026-10-20"), 60);
         assert_eq!(info.status, STATUS_EMPTY);
         assert_eq!(info.nearest, None);
+    }
+
+    #[test]
+    fn effective_expiry_sealed_opened_and_period() {
+        let mut p = pkg(1, d("2027-06-01"), false);
+        // запечатана — действует заводской срок
+        assert_eq!(p.effective_expiry(), d("2027-06-01"));
+        // открыли 01.10.2026, период 30 дней → годен до 31.10.2026 (раньше заводского)
+        p.opened = Some(d("2026-10-01"));
+        p.open_period_days = Some(30);
+        assert_eq!(p.effective_expiry(), d("2026-10-31"));
+        // период длиннее заводского срока — действует заводской
+        p.open_period_days = Some(365);
+        assert_eq!(p.effective_expiry(), d("2027-06-01"));
+        // период без даты вскрытия — не действует
+        p.opened = None;
+        p.open_period_days = Some(30);
+        assert_eq!(p.effective_expiry(), d("2027-06-01"));
+    }
+
+    #[test]
+    fn medicine_info_ignores_disposed_packages() {
+        // единственная упаковка списана → лекарство «без упаковок»
+        let mut m = Medicine {
+            id: 1,
+            name: "Тест".to_string(),
+            form: String::new(),
+            note: String::new(),
+            packages: vec![Package {
+                id: 1,
+                expiry: d("2026-09-01"),
+                month_only: false,
+                quantity: String::new(),
+                note: String::new(),
+                price: None,
+                opened: None,
+                open_period_days: None,
+                disposed: Some(DisposedInfo { date: d("2026-10-01"), reason: REASON_EXPIRED }),
+            }],
+        };
+        let info = medicine_info(&m, d("2026-10-20"), 60);
+        assert_eq!(info.status, STATUS_EMPTY);
+        // добавили активную → статус берётся от неё
+        m.packages.push(pkg(2, d("2027-02-01"), false));
+        let info = medicine_info(&m, d("2026-10-20"), 60);
+        assert_eq!(info.status, STATUS_OK);
+        assert_eq!(info.nearest, Some(d("2027-02-01")));
+    }
+
+    #[test]
+    fn journal_push_caps_at_400() {
+        let mut db = Database::default();
+        for i in 0..450 {
+            db.journal_push(&format!("событие {i}"), "лек", "уп");
+        }
+        assert_eq!(db.events.len(), 400);
+        assert_eq!(db.events[0].kind, "событие 50", "старейшие вытеснены");
+        assert_eq!(db.events[399].kind, "событие 449");
     }
 
     #[test]

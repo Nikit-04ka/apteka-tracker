@@ -18,10 +18,14 @@ export struct PackageRow {
     id: int,
     expiry: string,
     quantity: string,
+    price: string,
     note: string,
+    opened-info: string,
     status: int,
     days-text: string,
     status-text: string,
+    opened: bool,
+    disposed: bool,
 }
 
 // ===== Токены дизайна (единая точка правды, адаптив к теме) =====
@@ -66,7 +70,7 @@ component StatusDot inherits Rectangle {
         : Theme.muted;
 }
 
-// Бейдж-пилюля: цветной фон + точка + короткий текст («12 дн.», «−45 дн.»)
+// Бейдж-пилюля: цветной фон + точка + короткий текст («12 дн.», «−45 дн.», «списано»)
 component Badge inherits Rectangle {
     in property <int> status: 0;
     in property <string> text;
@@ -341,6 +345,11 @@ export component AppWindow inherits Window {
     callback pkg-start-edit(int);
     callback pkg-delete(int);
     callback pkg-clone(int);
+    callback pkg-open(int);
+    callback pkg-dispose(int, int);
+    callback pkg-restore(int);
+    callback toggle-show-disposed();
+    callback open-journal();
     callback pkg-save();
     callback pkg-cancel-edit();
     callback pkg-expiry-edited(string);
@@ -353,6 +362,12 @@ export component AppWindow inherits Window {
     // История изменений
     in-out property <bool> can-undo: false;
     in-out property <bool> can-redo: false;
+
+    // Жизненный цикл упаковок
+    in-out property <bool> show-disposed: false;
+    in-out property <string> summary-cost: "Стоимость: 0 руб.";
+    in-out property <string> pkg-price: "";
+    in-out property <string> pkg-period: "";
 
     // ===== Клавиатура: ↑/↓ — список, Ctrl+N — новое лекарство, Ctrl+F — поиск,
     // Delete — удалить (в два шага), Escape — отмена =====
@@ -467,6 +482,12 @@ export component AppWindow inherits Window {
                 dot-c: Theme.danger;
                 label-c: Theme.danger-text;
                 bg-c: Theme.danger-tint;
+            }
+            SummaryChip {
+                label: root.summary-cost;
+                dot-c: Theme.accent;
+                label-c: Theme.text;
+                bg-c: Theme.accent-tint-soft;
             }
         }
 
@@ -656,6 +677,11 @@ export component AppWindow inherits Window {
                             overflow: elide;
                             color: Theme.muted;
                         }
+                        Rectangle { horizontal-stretch: 1; }
+                        GhostButton {
+                            label: root.show-disposed ? "Скрыть списанные" : "Показать списанные";
+                            clicked => { root.toggle-show-disposed(); }
+                        }
                     }
 
                     // Таблица упаковок — карточки
@@ -678,12 +704,12 @@ export component AppWindow inherits Window {
                             ListView {
                                 vertical-stretch: 1;
                                 for p in root.packages: Rectangle {
-                                    height: 66px;
+                                    height: 80px;
                                     Rectangle {
                                         x: 0;
                                         y: 3px;
                                         width: parent.width;
-                                        height: 60px;
+                                        height: 74px;
                                         border-radius: 8px;
                                         background: Theme.card;
                                         border-width: 1px;
@@ -691,6 +717,7 @@ export component AppWindow inherits Window {
                                         drop-shadow-blur: 5px;
                                         drop-shadow-offset-y: 1px;
                                         drop-shadow-color: Palette.color-scheme == ColorScheme.dark ? transparent : rgba(15, 23, 42, 0.08);
+                                        opacity: p.disposed ? 0.6 : 1.0;
 
                                         HorizontalLayout {
                                             padding-left: 12px;
@@ -702,7 +729,7 @@ export component AppWindow inherits Window {
                                             VerticalLayout {
                                                 width: 10px;
                                                 alignment: center;
-                                                StatusDot { status: p.status; }
+                                                StatusDot { status: p.disposed ? 4 : p.status; }
                                             }
                                             VerticalLayout {
                                                 spacing: 3px;
@@ -724,32 +751,65 @@ export component AppWindow inherits Window {
                                                         color: Theme.muted;
                                                         horizontal-stretch: 1;
                                                     }
+                                                    Text {
+                                                        text: p.price;
+                                                        font-size: 12px;
+                                                        vertical-alignment: center;
+                                                        color: Theme.muted;
+                                                    }
                                                     Badge {
-                                                        status: p.status;
+                                                        status: p.disposed ? 4 : p.status;
                                                         text: p.days-text;
                                                     }
                                                 }
-                                                Text {
-                                                    text: p.note;
-                                                    font-size: 12px;
-                                                    overflow: elide;
-                                                    color: Theme.muted;
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    if (p.opened-info != ""): Text {
+                                                        text: p.opened-info;
+                                                        font-size: 11px;
+                                                        vertical-alignment: center;
+                                                        color: Theme.accent;
+                                                        overflow: elide;
+                                                    }
+                                                    Text {
+                                                        text: p.note;
+                                                        font-size: 12px;
+                                                        overflow: elide;
+                                                        color: Theme.muted;
+                                                    }
                                                 }
                                             }
                                             VerticalLayout {
                                                 alignment: center;
                                                 HorizontalLayout {
                                                     spacing: 6px;
-                                                    GhostButton {
+                                                    if (!p.disposed && !p.opened): GhostButton {
+                                                        label: "Открыть";
+                                                        clicked => { root.pkg-open(p.id); }
+                                                    }
+                                                    if (!p.disposed && p.opened): GhostButton {
+                                                        label: "Израсходовано";
+                                                        clicked => { root.pkg-dispose(p.id, 0); }
+                                                    }
+                                                    if (!p.disposed && p.opened): GhostButton {
+                                                        label: "Выбросить";
+                                                        danger: true;
+                                                        clicked => { root.pkg-dispose(p.id, 1); }
+                                                    }
+                                                    if (!p.disposed && !p.opened): GhostButton {
                                                         label: "Клонировать";
                                                         clicked => { root.pkg-clone(p.id); }
                                                     }
-                                                    GhostButton {
+                                                    if (!p.disposed): GhostButton {
                                                         label: "Изменить";
                                                         clicked => { root.pkg-start-edit(p.id); }
                                                     }
+                                                    if (p.disposed): GhostButton {
+                                                        label: "Вернуть";
+                                                        clicked => { root.pkg-restore(p.id); }
+                                                    }
                                                     GhostButton {
-                                                        label: "Удалить";
+                                                        label: p.disposed ? "Удалить навсегда" : "Удалить";
                                                         danger: true;
                                                         clicked => { root.pkg-delete(p.id); }
                                                     }
@@ -815,6 +875,24 @@ export component AppWindow inherits Window {
                                     LineEdit {
                                         text <=> root.pkg-quantity;
                                         placeholder-text: "напр. 2 уп.";
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 3px;
+                                    width: 130px;
+                                    FieldLabel { text: "Цена, руб."; }
+                                    LineEdit {
+                                        text <=> root.pkg-price;
+                                        placeholder-text: "напр. 350";
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 3px;
+                                    width: 130px;
+                                    FieldLabel { text: "После вскрытия, дн."; }
+                                    LineEdit {
+                                        text <=> root.pkg-period;
+                                        placeholder-text: "напр. 30";
                                     }
                                 }
                                 VerticalLayout {
@@ -907,6 +985,10 @@ export component AppWindow inherits Window {
                 clicked => { root.redo-history(); }
             }
             GhostButton {
+                label: "Журнал";
+                clicked => { root.open-journal(); }
+            }
+            GhostButton {
                 label: "Экспорт CSV";
                 clicked => { root.export-csv(); }
             }
@@ -928,6 +1010,76 @@ export component AppWindow inherits Window {
                 color: Theme.muted;
             }
         }
+        }
+    }
+}
+
+// ===== Окно журнала событий =====
+export component JournalWindow inherits Window {
+    title: "Журнал событий";
+    width: 680px;
+    height: 480px;
+    in-out property <[string]> events;
+    callback close-clicked();
+
+    background: Palette.color-scheme == ColorScheme.dark ? #1f2937 : #f8fafc;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        Rectangle {
+            vertical-stretch: 1;
+            border-radius: 8px;
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            clip: true;
+
+            VerticalLayout {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                padding: 8px;
+
+                ListView {
+                    vertical-stretch: 1;
+                    for e in root.events: Rectangle {
+                        height: 28px;
+                        Text {
+                            text: e;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            x: 8px;
+                            width: parent.width - 16px;
+                            color: Theme.text;
+                        }
+                    }
+                }
+            }
+
+            if (root.events.length == 0): Rectangle {
+                width: 100%;
+                height: 100%;
+                Text {
+                    width: 100%;
+                    y: 40px;
+                    horizontal-alignment: center;
+                    text: "Журнал пуст — события появятся по мере работы.";
+                    font-size: 13px;
+                    color: Theme.muted;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            Button {
+                text: "Закрыть";
+                clicked => { root.close-clicked(); }
+            }
         }
     }
 }

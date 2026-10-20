@@ -60,3 +60,11 @@ docs/screenshot.png
   снять `prev = st.db.clone()` ДО мутации и вызвать `commit_history(...)`.
   Последовательные правки одного поля склеиваются (`EditKind` + `last_commit_kind`).
   Хоткеи Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z, кнопки в статусной строке.
+- Жизненный цикл упаковки: `Package.opened` (дата вскрытия) +
+  `open_period_days` → `effective_expiry()` = min(заводской, вскрытие+период);
+  `Package.disposed: Option<DisposedInfo>` — мягкое списание (скрыто из учёта
+  и статусов, видно по toggle «Показать списанные», можно «Вернуть»).
+  STATUS_DISPOSED=4 передаётся в UI.
+- Цена `Package.price: Option<f64>` → чип «Стоимость» (только активные упаковки).
+- Журнал: `Database.events` (cap 400, `journal_push`) — только структурные
+  события; окно JournalWindow наполняется при каждом открытии (новейшие сверху).

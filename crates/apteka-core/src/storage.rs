@@ -1,6 +1,9 @@
 //! Сохранение и загрузка данных: JSON рядом с exe (портативный режим) и экспорт CSV.
 
-use crate::model::{days_left, fmt_date, fmt_date_display, status_for, status_text, Database};
+use crate::model::{
+    days_left, dispose_reason_text, fmt_date, fmt_date_display, status_for, status_text, Database,
+    STATUS_DISPOSED,
+};
 use chrono::Local;
 use std::fs;
 use std::io::{self, Write};
@@ -85,34 +88,51 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
     let today = Local::now().date_naive();
     let mut out = String::new();
     out.push('\u{FEFF}');
-    out.push_str("Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество;Комментарий\r\n");
+    out.push_str("Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество;Цена;Открыта;Списано;Комментарий\r\n");
     for m in &db.medicines {
         if m.packages.is_empty() {
-            out.push_str(&format!(
-                "{};{};{};;;;;\r\n",
-                esc(&m.name),
-                esc(&m.form),
-                esc(&m.note)
-            ));
+            out.push_str(&format!("{};{};{};;;;;;;;\r\n", esc(&m.name), esc(&m.form), esc(&m.note)));
             continue;
         }
         for p in &m.packages {
-            let days = days_left(p.expiry, today);
-            let status = status_for(days, db.warn_days as i64);
+            let eff = p.effective_expiry();
+            let days = days_left(eff, today);
+            let (_status, status_cell) = if let Some(d) = &p.disposed {
+                (
+                    STATUS_DISPOSED,
+                    format!("списано ({})", dispose_reason_text(d.reason)),
+                )
+            } else {
+                let s = status_for(days, db.warn_days as i64);
+                (s, status_text(s, days))
+            };
             let date_cell = if p.month_only {
                 format!("{} (до конца мес.)", fmt_date_display(p.expiry, true))
             } else {
                 fmt_date(p.expiry)
             };
+            let price_cell = p.price.map(|v| format!("{v:.2}")).unwrap_or_default();
+            let opened_cell = p
+                .opened
+                .map(|o| format!("открыта {}", fmt_date(o)))
+                .unwrap_or_default();
+            let disposed_cell = p
+                .disposed
+                .as_ref()
+                .map(|d| format!("{} {}", dispose_reason_text(d.reason), fmt_date(d.date)))
+                .unwrap_or_default();
             out.push_str(&format!(
-                "{};{};{};{};{};{};{};{}\r\n",
+                "{};{};{};{};{};{};{};{};{};{};{}\r\n",
                 esc(&m.name),
                 esc(&m.form),
                 esc(&m.note),
                 date_cell,
                 days,
-                esc(&status_text(status, days)),
+                esc(&status_cell),
                 esc(&p.quantity),
+                price_cell,
+                opened_cell,
+                disposed_cell,
                 esc(&p.note)
             ));
         }
@@ -205,6 +225,10 @@ mod tests {
                     month_only: false,
                     quantity: "2 уп.".to_string(),
                     note: "в ящике".to_string(),
+                    price: Some(350.0),
+                    opened: None,
+                    open_period_days: None,
+                    disposed: None,
                 },
                 // «Годен до 01 2028» → 31.01.2028, месяц без дня
                 Package {
@@ -213,6 +237,10 @@ mod tests {
                     month_only: true,
                     quantity: "1 фл.".to_string(),
                     note: String::new(),
+                    price: None,
+                    opened: None,
+                    open_period_days: None,
+                    disposed: None,
                 },
             ],
         });
@@ -267,6 +295,7 @@ mod tests {
         assert!(text.starts_with('\u{FEFF}'), "нужен BOM для Excel");
         assert!(text.contains("\"Парацетамол \"\"Тева\"\"\""), "кавычки экранируются");
         assert!(text.contains("01.01.2030"));
+        assert!(text.contains("350.00"), "цена попадает в CSV");
         assert!(text.contains("01.2028 (до конца мес.)"), "месячный срок помечается в CSV");
         assert!(text.contains("в ящике"));
         fs::remove_dir_all(&dir).ok();

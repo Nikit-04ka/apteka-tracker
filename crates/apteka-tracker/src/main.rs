@@ -114,12 +114,19 @@ fn color_green() -> Color {
 // ---------- Построение строк UI ----------
 
 fn build_med_row(m: &Medicine, info: &MedInfo) -> MedicineRow {
+    let active = m.packages.iter().filter(|p| !p.is_disposed()).count();
     let subtitle = match info.nearest {
-        None => "нет упаковок — добавьте первую".to_string(),
+        None => {
+            if m.packages.is_empty() {
+                "нет упаковок — добавьте первую".to_string()
+            } else {
+                format!("активных упаковок нет (списано: {})", m.packages.len())
+            }
+        }
         Some(d) => format!(
             "ближайший срок: {} · упаковок: {} · {}",
             fmt_date_display(d, info.nearest_month_only),
-            m.packages.len(),
+            active,
             status_text(info.status, info.nearest_days)
         ),
     };
@@ -198,9 +205,19 @@ fn update_summary(ui: &AppWindow, st: &State) {
         st.db.warn_days, soon
     )));
     ui.set_summary_expired(SharedString::from(format!("Просрочено: {}", expired)));
+
+    let cost: f64 = st
+        .db
+        .medicines
+        .iter()
+        .flat_map(|m| m.packages.iter())
+        .filter(|p| !p.is_disposed())
+        .filter_map(|p| p.price)
+        .sum();
+    ui.set_summary_cost(SharedString::from(format!("Стоимость: {cost:.0} руб.")));
 }
 
-/// Пересобирает таблицу упаковок выбранного лекарства.
+/// Пересобирает таблицу упаковок выбранного лекарства (списанные — по флагу).
 fn rebuild_packages(ui: &AppWindow, st: &State) {
     let Some(m) = st.selected() else {
         ui.set_packages(ModelRc::default());
@@ -209,28 +226,68 @@ fn rebuild_packages(ui: &AppWindow, st: &State) {
     };
     let t = today();
     let warn = st.db.warn_days as i64;
+    let show_disposed = ui.get_show_disposed();
 
-    let mut pkgs: Vec<&Package> = m.packages.iter().collect();
-    pkgs.sort_by_key(|p| p.expiry);
+    let mut pkgs: Vec<&Package> = m
+        .packages
+        .iter()
+        .filter(|p| show_disposed || !p.is_disposed())
+        .collect();
+    pkgs.sort_by_key(|p| p.effective_expiry());
 
     let rows: Vec<PackageRow> = pkgs
         .iter()
         .map(|p| {
-            let days = days_left(p.expiry, t);
-            let s = status_for(days, warn);
+            let eff = p.effective_expiry();
+            let (days, status, days_text) = if let Some(_d) = &p.disposed {
+                (0, STATUS_DISPOSED, "списано".to_string())
+            } else {
+                let days = days_left(eff, t);
+                let s = status_for(days, warn);
+                (days, s, days_short(s, days))
+            };
+            let opened_info = if let Some(d) = &p.disposed {
+                format!(
+                    "списано {} ({})",
+                    fmt_date(d.date),
+                    dispose_reason_text(d.reason)
+                )
+            } else if let Some(o) = p.opened {
+                if p.open_period_days.is_some() {
+                    format!("открыта {} · годен до {}", fmt_date(o), fmt_date(eff))
+                } else {
+                    format!("открыта {} · без периода после вскрытия", fmt_date(o))
+                }
+            } else {
+                String::new()
+            };
             PackageRow {
                 id: p.id,
                 expiry: fmt_date_display(p.expiry, p.month_only).into(),
                 quantity: p.quantity.clone().into(),
+                price: p
+                    .price
+                    .map(|v| format!("{v:.2} руб."))
+                    .unwrap_or_default()
+                    .into(),
                 note: p.note.clone().into(),
-                status: s,
-                days_text: days_short(s, days).into(),
-                status_text: status_text(s, days).into(),
+                opened_info: opened_info.into(),
+                status,
+                days_text: days_text.into(),
+                status_text: status_text(status, days).into(),
+                opened: p.opened.is_some(),
+                disposed: p.is_disposed(),
             }
         })
         .collect();
 
-    ui.set_packages_header(SharedString::from(format!("Упаковки ({})", rows.len())));
+    let disposed_count = m.packages.iter().filter(|p| p.is_disposed()).count();
+    let header = if disposed_count > 0 {
+        format!("Упаковки ({}, списано: {})", rows.len(), disposed_count)
+    } else {
+        format!("Упаковки ({})", rows.len())
+    };
+    ui.set_packages_header(SharedString::from(header));
     ui.set_packages(ModelRc::from(Rc::new(VecModel::from(rows))));
 }
 
@@ -289,6 +346,11 @@ fn move_selection(ui: &AppWindow, st: &mut State, delta: i32) {
     update_details(ui, st, true);
 }
 
+/// Краткое описание упаковки для журнала.
+fn pkg_desc(p: &Package) -> String {
+    format!("срок {}", fmt_date_display(p.expiry, p.month_only))
+}
+
 fn refresh_all(ui: &AppWindow, st: &mut State, reset_form: bool) {
     rebuild_list(ui, st);
     update_summary(ui, st);
@@ -321,6 +383,8 @@ fn reset_pkg_form(ui: &AppWindow, st: &mut State) {
     ui.set_pkg_expiry(SharedString::new());
     ui.set_pkg_quantity(SharedString::new());
     ui.set_pkg_note(SharedString::new());
+    ui.set_pkg_price(SharedString::new());
+    ui.set_pkg_period(SharedString::new());
     ui.set_pkg_validation(SharedString::from(
         "Формат: ГГГГ-ММ-ДД, ДД.ММ.ГГГГ или ММ.ГГГГ (годен до конца месяца)",
     ));
@@ -328,7 +392,7 @@ fn reset_pkg_form(ui: &AppWindow, st: &mut State) {
     ui.set_pkg_save_enabled(false);
 }
 
-/// Живая валидация поля срока: подсвечивает будущий статус даты.
+/// Живая валидация формы упаковки: срок, период после вскрытия, цена.
 fn validate_pkg_form(ui: &AppWindow, st: &State) {
     let text = ui.get_pkg_expiry().to_string();
     if text.trim().is_empty() {
@@ -339,29 +403,62 @@ fn validate_pkg_form(ui: &AppWindow, st: &State) {
         ui.set_pkg_save_enabled(false);
         return;
     }
-    match parse_date_input(&text) {
-        None => {
-            ui.set_pkg_validation(SharedString::from("Неверная дата"));
+    let Some((d, month_only)) = parse_date_input(&text) else {
+        ui.set_pkg_validation(SharedString::from("Неверная дата"));
+        ui.set_pkg_validation_color(color_red());
+        ui.set_pkg_save_enabled(false);
+        return;
+    };
+    // период после вскрытия: пусто → не применим
+    let period_text = ui.get_pkg_period().to_string();
+    let open_period_days = if period_text.trim().is_empty() {
+        None
+    } else {
+        match period_text.trim().parse::<i32>() {
+            Ok(v) if (1..=3650).contains(&v) => Some(v),
+            _ => {
+                ui.set_pkg_validation(SharedString::from(
+                    "Период после вскрытия: целое число дней от 1 до 3650",
+                ));
+                ui.set_pkg_validation_color(color_red());
+                ui.set_pkg_save_enabled(false);
+                return;
+            }
+        }
+    };
+    // цена: пусто → не указана
+    let price_text = ui.get_pkg_price().to_string();
+    if !price_text.trim().is_empty() {
+        let ok = price_text
+            .trim()
+            .replace(',', ".")
+            .parse::<f64>()
+            .map(|v| (0.0..=1_000_000.0).contains(&v))
+            .unwrap_or(false);
+        if !ok {
+            ui.set_pkg_validation(SharedString::from("Цена: число, например 350 или 249.99"));
             ui.set_pkg_validation_color(color_red());
             ui.set_pkg_save_enabled(false);
-        }
-        Some((d, month_only)) => {
-            let days = days_left(d, today());
-            let s = status_for(days, st.db.warn_days as i64);
-            let msg = if month_only {
-                format!("месяц: годен до {} · {}", fmt_date(d), status_text(s, days))
-            } else {
-                status_text(s, days)
-            };
-            ui.set_pkg_validation(SharedString::from(msg));
-            ui.set_pkg_validation_color(match s {
-                STATUS_EXPIRED => color_red(),
-                STATUS_SOON => color_amber(),
-                _ => color_green(),
-            });
-            ui.set_pkg_save_enabled(true);
+            return;
         }
     }
+    let days = days_left(d, today());
+    let s = status_for(days, st.db.warn_days as i64);
+    let mut msg = if month_only {
+        format!("месяц: годен до {} · {}", fmt_date(d), status_text(s, days))
+    } else {
+        status_text(s, days)
+    };
+    if open_period_days.is_some() {
+        msg.push_str(" · период применится после вскрытия");
+    }
+    ui.set_pkg_validation(SharedString::from(msg));
+    ui.set_pkg_validation_color(match s {
+        STATUS_EXPIRED => color_red(),
+        STATUS_SOON => color_amber(),
+        _ => color_green(),
+    });
+    ui.set_pkg_save_enabled(true);
 }
 
 // ---------- Служебные ----------
@@ -562,6 +659,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 note: String::new(),
                 packages: Vec::new(),
             });
+            st.db.journal_push("лекарство добавлено", "Новое лекарство", "");
             st.selected_id = id;
             st.search.clear();
             st.filter_idx = 0;
@@ -583,7 +681,11 @@ fn main() -> Result<(), slint::PlatformError> {
             let mut st = s.borrow_mut();
             let sel = st.selected_id;
             let prev = st.db.clone();
+            let name = st.selected().map(|m| m.name.clone());
             st.db.medicines.retain(|m| m.id != sel);
+            if let Some(n) = name {
+                st.db.journal_push("лекарство удалено", &n, "");
+            }
             st.selected_id = -1;
             ui.set_selected_id(-1);
             reset_delete_armed(&ui);
@@ -702,11 +804,26 @@ fn main() -> Result<(), slint::PlatformError> {
             let found = st
                 .selected()
                 .and_then(|m| m.packages.iter().find(|p| p.id == pid))
-                .map(|p| (p.expiry, p.quantity.clone(), p.note.clone()));
-            if let Some((expiry, quantity, note)) = found {
+                .map(|p| {
+                    (
+                        p.expiry,
+                        p.quantity.clone(),
+                        p.note.clone(),
+                        p.price,
+                        p.open_period_days,
+                    )
+                });
+            if let Some((expiry, quantity, note, price, period)) = found {
                 ui.set_pkg_expiry(SharedString::from(fmt_date(expiry)));
                 ui.set_pkg_quantity(SharedString::from(quantity));
                 ui.set_pkg_note(SharedString::from(note));
+                ui.set_pkg_price(
+                    price
+                        .map(|v| format!("{v:.2}"))
+                        .unwrap_or_default()
+                        .into(),
+                );
+                ui.set_pkg_period(period.map(|v| v.to_string()).unwrap_or_default().into());
                 st.pkg_edit_id = pid;
                 ui.set_pkg_editing(true);
                 validate_pkg_form(&ui, &st);
@@ -754,16 +871,25 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_pkg_clone(move |pid| {
             let ui = h.unwrap();
             let mut st = s.borrow_mut();
-            // Новая упаковка с тем же количеством/комментарием и сроком «сегодня + 1 год».
+            // Новая упаковка с теми же количеством/ценой/комментарием и сроком «сегодня + 1 год».
             let found = st
                 .selected()
                 .and_then(|m| m.packages.iter().find(|p| p.id == pid))
-                .map(|p| (p.quantity.clone(), p.note.clone()));
-            let Some((quantity, note)) = found else { return };
+                .map(|p| {
+                    (
+                        p.quantity.clone(),
+                        p.note.clone(),
+                        p.price,
+                        p.open_period_days,
+                    )
+                });
+            let Some((quantity, note, price, period)) = found else { return };
             let Some(expiry) = today().checked_add_months(Months::new(12)) else { return };
             ui.set_pkg_expiry(SharedString::from(fmt_date(expiry)));
             ui.set_pkg_quantity(SharedString::from(quantity));
             ui.set_pkg_note(SharedString::from(note));
+            ui.set_pkg_price(price.map(|v| format!("{v:.2}")).unwrap_or_default().into());
+            ui.set_pkg_period(period.map(|v| v.to_string()).unwrap_or_default().into());
             st.pkg_edit_id = -1;
             ui.set_pkg_editing(false);
             validate_pkg_form(&ui, &st);
@@ -780,11 +906,27 @@ fn main() -> Result<(), slint::PlatformError> {
             };
             let quantity = ui.get_pkg_quantity().to_string();
             let note = ui.get_pkg_note().to_string();
+            let price_text = ui.get_pkg_price().to_string();
+            let price = if price_text.trim().is_empty() {
+                None
+            } else {
+                price_text.trim().replace(',', ".").parse::<f64>().ok()
+            };
+            let period_text = ui.get_pkg_period().to_string();
+            let open_period_days = if period_text.trim().is_empty() {
+                None
+            } else {
+                period_text.trim().parse::<i32>().ok()
+            };
+            if open_period_days.is_some_and(|v| !(1..=3650).contains(&v)) {
+                return;
+            }
 
             let mut st = s.borrow_mut();
             let prev = st.db.clone();
             let sel = st.selected_id;
             let edit_id = st.pkg_edit_id;
+            let mut journal_note: Option<(String, String)> = None;
             match edit_id {
                 -1 => {
                     let pid = st.db.new_pkg_id();
@@ -793,9 +935,17 @@ fn main() -> Result<(), slint::PlatformError> {
                             id: pid,
                             expiry,
                             month_only,
-                            quantity,
-                            note,
+                            quantity: quantity.clone(),
+                            note: note.clone(),
+                            price,
+                            opened: None,
+                            open_period_days,
+                            disposed: None,
                         });
+                        journal_note = Some((
+                            m.name.clone(),
+                            format!("срок {}", fmt_date_display(expiry, month_only)),
+                        ));
                     }
                 }
                 pid => {
@@ -803,13 +953,27 @@ fn main() -> Result<(), slint::PlatformError> {
                         if let Some(p) = m.packages.iter_mut().find(|p| p.id == pid) {
                             p.expiry = expiry;
                             p.month_only = month_only;
-                            p.quantity = quantity;
-                            p.note = note;
+                            p.quantity = quantity.clone();
+                            p.note = note.clone();
+                            p.price = price;
+                            p.open_period_days = open_period_days;
+                            journal_note = Some((
+                                m.name.clone(),
+                                format!("срок {}", fmt_date_display(expiry, month_only)),
+                            ));
                         }
                     }
                 }
             }
             commit_history(&ui, &mut st, prev);
+            if let Some((name, pdesc)) = journal_note {
+                let kind = if edit_id >= 0 {
+                    "изменена упаковка"
+                } else {
+                    "добавлена упаковка"
+                };
+                st.db.journal_push(kind, &name, &pdesc);
+            }
             reset_pkg_form(&ui, &mut st);
             refresh_all(&ui, &mut st, false);
             persist(&ui, &st);
@@ -823,8 +987,15 @@ fn main() -> Result<(), slint::PlatformError> {
             let ui = h.unwrap();
             let mut st = s.borrow_mut();
             let prev = st.db.clone();
+            let mut jnote: Option<(String, String)> = None;
             if let Some(m) = st.selected_mut() {
+                if let Some(p) = m.packages.iter().find(|p| p.id == pid) {
+                    jnote = Some((m.name.clone(), pkg_desc(p)));
+                }
                 m.packages.retain(|p| p.id != pid);
+            }
+            if let Some((n, d)) = jnote {
+                st.db.journal_push("упаковка удалена", &n, &d);
             }
             if st.pkg_edit_id == pid {
                 st.pkg_edit_id = -1;
@@ -850,6 +1021,151 @@ fn main() -> Result<(), slint::PlatformError> {
                     ui.set_status_message(SharedString::from(format!("Ошибка экспорта: {e}")))
                 }
             }
+        });
+    }
+
+    // ===== Жизненный цикл упаковки: открытие, списание, возврат =====
+
+    {
+        let h = ui.as_weak();
+        let s = state.clone();
+        ui.on_pkg_open(move |pid| {
+            let ui = h.unwrap();
+            let mut st = s.borrow_mut();
+            let prev = st.db.clone();
+            let mut jnote: Option<(String, String)> = None;
+            if let Some(m) = st.selected_mut() {
+                if let Some(p) = m
+                    .packages
+                    .iter_mut()
+                    .find(|p| p.id == pid && !p.is_disposed())
+                {
+                    p.opened = Some(today());
+                    let eff = p.effective_expiry();
+                    jnote = Some((
+                        m.name.clone(),
+                        format!("{} · годен до {}", pkg_desc(p), fmt_date(eff)),
+                    ));
+                }
+            }
+            if jnote.is_some() {
+                commit_history(&ui, &mut st, prev);
+                if let Some((n, d)) = jnote {
+                    st.db.journal_push("упаковка открыта", &n, &d);
+                }
+                refresh_all(&ui, &mut st, false);
+                persist(&ui, &st);
+            }
+        });
+    }
+
+    {
+        let h = ui.as_weak();
+        let s = state.clone();
+        ui.on_pkg_dispose(move |pid, reason| {
+            let ui = h.unwrap();
+            let mut st = s.borrow_mut();
+            let prev = st.db.clone();
+            let mut jnote: Option<(String, String)> = None;
+            if let Some(m) = st.selected_mut() {
+                if let Some(p) = m
+                    .packages
+                    .iter_mut()
+                    .find(|p| p.id == pid && !p.is_disposed())
+                {
+                    p.disposed = Some(DisposedInfo {
+                        date: today(),
+                        reason,
+                    });
+                    jnote = Some((
+                        m.name.clone(),
+                        format!("{} ({})", pkg_desc(p), dispose_reason_text(reason)),
+                    ));
+                }
+            }
+            if jnote.is_some() {
+                commit_history(&ui, &mut st, prev);
+                if let Some((n, d)) = jnote {
+                    st.db.journal_push("упаковка списана", &n, &d);
+                }
+                refresh_all(&ui, &mut st, false);
+                persist(&ui, &st);
+            }
+        });
+    }
+
+    {
+        let h = ui.as_weak();
+        let s = state.clone();
+        ui.on_pkg_restore(move |pid| {
+            let ui = h.unwrap();
+            let mut st = s.borrow_mut();
+            let prev = st.db.clone();
+            let mut jnote: Option<(String, String)> = None;
+            if let Some(m) = st.selected_mut() {
+                if let Some(p) = m
+                    .packages
+                    .iter_mut()
+                    .find(|p| p.id == pid && p.is_disposed())
+                {
+                    p.disposed = None;
+                    jnote = Some((m.name.clone(), pkg_desc(p)));
+                }
+            }
+            if jnote.is_some() {
+                commit_history(&ui, &mut st, prev);
+                if let Some((n, d)) = jnote {
+                    st.db.journal_push("упаковка возвращена в работу", &n, &d);
+                }
+                refresh_all(&ui, &mut st, false);
+                persist(&ui, &st);
+            }
+        });
+    }
+
+    {
+        let h = ui.as_weak();
+        let s = state.clone();
+        ui.on_toggle_show_disposed(move || {
+            let ui = h.unwrap();
+            let st = s.borrow();
+            ui.set_show_disposed(!ui.get_show_disposed());
+            rebuild_packages(&ui, &st);
+        });
+    }
+
+    // Журнал событий: отдельное окно, наполняется при каждом открытии.
+    let journal = JournalWindow::new()?;
+    {
+        let jh = journal.as_weak();
+        journal.on_close_clicked(move || {
+            let j = jh.unwrap();
+            let _ = j.hide();
+        });
+    }
+    {
+        let s = state.clone();
+        let jh = journal.as_weak();
+        ui.on_open_journal(move || {
+            let j = jh.unwrap();
+            let st = s.borrow();
+            let rows: Vec<SharedString> = st
+                .db
+                .events
+                .iter()
+                .rev()
+                .map(|e| {
+                    SharedString::from(format!(
+                        "{} · {} — {} {}",
+                        e.at.format("%d.%m.%Y %H:%M"),
+                        e.medicine,
+                        e.kind,
+                        e.package
+                    ))
+                })
+                .collect();
+            j.set_events(ModelRc::from(Rc::new(VecModel::from(rows))));
+            let _ = j.show();
         });
     }
 
