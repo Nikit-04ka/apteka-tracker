@@ -1,0 +1,933 @@
+// Домашняя аптечка — учёт сроков годности лекарств.
+// Дизайн-система: фирменный бирюзовый акцент (как у иконки), карточки,
+// бейджи статусов, адаптив к тёмной/светлой теме, сдержанные анимации.
+
+import { Button, ComboBox, LineEdit, ListView, SpinBox, TextEdit, Palette } from "std-widgets.slint";
+
+// Строка списка лекарств. status: 0 = годен, 1 = истекает, 2 = просрочено, 3 = нет упаковок
+export struct MedicineRow {
+    id: int,
+    name: string,
+    subtitle: string,
+    days-text: string,
+    status: int,
+}
+
+// Строка таблицы упаковок выбранного лекарства
+export struct PackageRow {
+    id: int,
+    expiry: string,
+    quantity: string,
+    note: string,
+    status: int,
+    days-text: string,
+    status-text: string,
+}
+
+// ===== Токены дизайна (единая точка правды, адаптив к теме) =====
+export global Theme {
+    in-out property <bool> dark: Palette.color-scheme == ColorScheme.dark;
+
+    // Фирменный акцент — бирюза иконки
+    in-out property <color> accent: #0f766e;
+    in-out property <color> accent-hover: #0d9488;
+    in-out property <color> accent-pressed: #115e59;
+    in-out property <color> accent-tint: Palette.color-scheme == ColorScheme.dark ? rgba(20, 184, 166, 0.22) : rgba(20, 184, 166, 0.16);
+    in-out property <color> accent-tint-soft: Palette.color-scheme == ColorScheme.dark ? rgba(20, 184, 166, 0.12) : rgba(20, 184, 166, 0.09);
+
+    // Статусы
+    in-out property <color> danger: #dc2626;
+    in-out property <color> warn: #d97706;
+    in-out property <color> ok: #16a34a;
+    in-out property <color> danger-tint: Palette.color-scheme == ColorScheme.dark ? rgba(220, 38, 38, 0.22) : rgba(220, 38, 38, 0.12);
+    in-out property <color> warn-tint: Palette.color-scheme == ColorScheme.dark ? rgba(217, 119, 6, 0.24) : rgba(217, 119, 6, 0.15);
+    in-out property <color> danger-text: Palette.color-scheme == ColorScheme.dark ? #f87171 : #b91c1c;
+    in-out property <color> warn-text: Palette.color-scheme == ColorScheme.dark ? #fbbf24 : #92400e;
+    in-out property <color> ok-text: Palette.color-scheme == ColorScheme.dark ? #4ade80 : #15803d;
+
+    // Нейтральные
+    in-out property <color> text: Palette.color-scheme == ColorScheme.dark ? #e2e8f0 : #0f172a;
+    in-out property <color> muted: Palette.color-scheme == ColorScheme.dark ? #94a3b8 : #64748b;
+    in-out property <color> hairline: Palette.color-scheme == ColorScheme.dark ? rgba(255, 255, 255, 0.10) : rgba(15, 23, 42, 0.09);
+    in-out property <color> panel: Palette.color-scheme == ColorScheme.dark ? rgba(255, 255, 255, 0.04) : rgba(15, 23, 42, 0.03);
+    in-out property <color> card: Palette.color-scheme == ColorScheme.dark ? rgba(255, 255, 255, 0.055) : #ffffff;
+    in-out property <color> hover: Palette.color-scheme == ColorScheme.dark ? rgba(255, 255, 255, 0.06) : rgba(15, 23, 42, 0.045);
+}
+
+// Точка-индикатор статуса
+component StatusDot inherits Rectangle {
+    in property <int> status: 0;
+    width: 10px;
+    height: 10px;
+    border-radius: 5px;
+    background: root.status == 2 ? Theme.danger
+        : root.status == 1 ? Theme.warn
+        : root.status == 0 ? Theme.ok
+        : Theme.muted;
+}
+
+// Бейдж-пилюля: цветной фон + точка + короткий текст («12 дн.», «−45 дн.»)
+component Badge inherits Rectangle {
+    in property <int> status: 0;
+    in property <string> text;
+    height: 22px;
+    horizontal-stretch: 0;
+    border-radius: 11px;
+    background: root.status == 2 ? Theme.danger-tint
+        : root.status == 1 ? Theme.warn-tint
+        : root.status == 0 ? Theme.accent-tint-soft
+        : Theme.panel;
+    HorizontalLayout {
+        padding-left: 9px;
+        padding-right: 9px;
+        spacing: 6px;
+        VerticalLayout {
+            width: 6px;
+            alignment: center;
+            Rectangle {
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: root.status == 2 ? Theme.danger
+                    : root.status == 1 ? Theme.warn
+                    : root.status == 0 ? Theme.ok
+                    : Theme.muted;
+            }
+        }
+        Text {
+            text: root.text;
+            font-size: 11px;
+            font-weight: 700;
+            color: root.status == 2 ? Theme.danger-text
+                : root.status == 1 ? Theme.warn-text
+                : root.status == 0 ? Theme.ok-text
+                : Theme.muted;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Основная кнопка (фирменный акцент)
+component AccentButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    callback clicked;
+    height: 32px;
+    border-radius: 8px;
+    background: !root.enabled ? Theme.panel
+        : ta.pressed ? Theme.accent-pressed
+        : ta.has-hover ? Theme.accent-hover
+        : Theme.accent;
+    animate background { duration: 90ms; easing: ease-out; }
+    opacity: root.enabled ? 1.0 : 0.55;
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 14px;
+        padding-right: 14px;
+        alignment: center;
+        Text {
+            text: root.label;
+            font-size: 13px;
+            font-weight: 700;
+            color: #ffffff;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Вторичная кнопка-призрак; danger = красная (удаление)
+component GhostButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> danger: false;
+    in property <bool> enabled: true;
+    callback clicked;
+    height: 30px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: root.danger ? Theme.danger-tint : Theme.hairline;
+    background: ta.pressed ? (root.danger ? Theme.danger-tint : Theme.accent-tint)
+        : ta.has-hover ? (root.danger ? Theme.danger-tint : Theme.accent-tint-soft)
+        : transparent;
+    animate background { duration: 90ms; easing: ease-out; }
+    opacity: root.enabled ? 1.0 : 0.45;
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        alignment: center;
+        Text {
+            text: root.label;
+            font-size: 12px;
+            font-weight: 600;
+            color: root.danger ? Theme.danger-text
+                : ta.has-hover ? Theme.accent
+                : Theme.text;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Метка поля над элементом ввода
+component FieldLabel inherits Text {
+    font-size: 11px;
+    font-weight: 600;
+    color: Theme.muted;
+}
+
+// Чип сводки
+component SummaryChip inherits Rectangle {
+    in property <color> dot-c;
+    in property <color> label-c;
+    in property <color> bg-c;
+    in property <string> label;
+    height: 30px;
+    border-radius: 15px;
+    background: root.bg-c;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        spacing: 8px;
+        VerticalLayout {
+            width: 8px;
+            alignment: center;
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: root.dot-c;
+            }
+        }
+        Text {
+            text: root.label;
+            font-size: 12px;
+            font-weight: 600;
+            color: root.label-c;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// Строка лекарства в списке
+component MedRow inherits Rectangle {
+    in property <MedicineRow> data;
+    in property <bool> selected: false;
+    callback clicked;
+
+    height: 64px;
+    border-radius: 8px;
+    border-width: root.selected ? 2px : 1px;
+    border-color: root.selected ? Theme.accent
+        : root.data.status == 2 ? Theme.danger-tint
+        : root.data.status == 1 ? Theme.warn-tint
+        : transparent;
+    background: root.selected ? Theme.accent-tint
+        : root.data.status == 2 ? Theme.danger-tint
+        : root.data.status == 1 ? Theme.warn-tint
+        : ta.has-hover ? Theme.hover
+        : transparent;
+    animate background { duration: 100ms; easing: ease-out; }
+    animate border-color { duration: 100ms; easing: ease-out; }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    VerticalLayout {
+        x: 0;
+        y: 0;
+        width: root.width;
+        height: root.height;
+        padding: 8px;
+        padding-left: 12px;
+        padding-right: 10px;
+        spacing: 4px;
+
+        HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout {
+                width: 10px;
+                alignment: center;
+                StatusDot { status: root.data.status; }
+            }
+            Text {
+                text: root.data.name;
+                font-size: 15px;
+                font-weight: 700;
+                overflow: elide;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                color: Theme.text;
+            }
+            Badge {
+                status: root.data.status;
+                text: root.data.days-text;
+            }
+        }
+        Text {
+            text: root.data.subtitle;
+            font-size: 12px;
+            overflow: elide;
+            color: Theme.muted;
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Домашняя аптечка — учёт сроков годности";
+    icon: @image-url("../assets/icon.png");
+    width: 1150px;
+    height: 680px;
+    forward-focus: keys;
+
+    // ===== Данные списка =====
+    in-out property <[MedicineRow]> medicines;
+    in-out property <[PackageRow]> packages;
+    in-out property <int> selected-id: -1;
+    in-out property <bool> has-selection: false;
+    in-out property <string> packages-header: "Упаковки";
+    in-out property <string> list-empty-text: "Аптечка пуста.";
+
+    // ===== Тулбар =====
+    in-out property <string> search-text: "";
+    in-out property <int> filter-index: 0;
+    in-out property <int> sort-index: 0;
+
+    // ===== Детали лекарства =====
+    in-out property <string> detail-name: "";
+    in-out property <int> detail-form-index: 0;
+    in-out property <string> detail-note: "";
+    in-out property <[string]> form-options;
+    in-out property <string> delete-btn-text: "Удалить лекарство";
+    in-out property <bool> delete-armed: false;
+
+    // ===== Сводка =====
+    in-out property <string> summary-total: "Лекарств: 0 · Упаковок: 0";
+    in-out property <string> summary-soon: "Истекают: 0";
+    in-out property <string> summary-expired: "Просрочено: 0";
+
+    // ===== Форма упаковки =====
+    in-out property <string> pkg-expiry: "";
+    in-out property <string> pkg-quantity: "";
+    in-out property <string> pkg-note: "";
+    in-out property <bool> pkg-editing: false;
+    in-out property <string> pkg-validation: "";
+    in-out property <color> pkg-validation-color: Theme.muted;
+    in-out property <bool> pkg-save-enabled: false;
+
+    // ===== Статусная строка =====
+    in-out property <int> warn-days: 60;
+    in-out property <string> status-message: "";
+
+    // ===== Колбэки =====
+    callback add-medicine();
+    callback select-medicine(int);
+    callback delete-medicine();
+    callback name-edited(string);
+    callback note-edited(string);
+    callback form-selected(int);
+    callback search-edited(string);
+    callback filter-selected(int);
+    callback sort-selected(int);
+    callback warn-days-changed(int);
+    callback pkg-start-edit(int);
+    callback pkg-delete(int);
+    callback pkg-clone(int);
+    callback pkg-save();
+    callback pkg-cancel-edit();
+    callback pkg-expiry-edited(string);
+    callback pkg-quick(int);
+    callback export-csv();
+    callback move-selection(int);
+    callback undo-history();
+    callback redo-history();
+
+    // История изменений
+    in-out property <bool> can-undo: false;
+    in-out property <bool> can-redo: false;
+
+    // ===== Клавиатура: ↑/↓ — список, Ctrl+N — новое лекарство, Ctrl+F — поиск,
+    // Delete — удалить (в два шага), Escape — отмена =====
+    keys := FocusScope {
+        width: 100%;
+        height: 100%;
+
+        key-pressed(event) => {
+            if (event.modifiers.control && (event.text == "n" || event.text == "N")) {
+                root.add-medicine();
+                accept
+            } else if (event.modifiers.control && (event.text == "f" || event.text == "F")) {
+                search-input.focus();
+                accept
+            } else if (event.modifiers.control && (event.text == "z" || event.text == "Z")) {
+                if (event.modifiers.shift) {
+                    root.redo-history();
+                } else {
+                    root.undo-history();
+                }
+                accept
+            } else if (event.modifiers.control && (event.text == "y" || event.text == "Y")) {
+                root.redo-history();
+                accept
+            } else if (event.text == Key.UpArrow) {
+                root.move-selection(-1);
+                accept
+            } else if (event.text == Key.DownArrow) {
+                root.move-selection(1);
+                accept
+            } else if (event.text == Key.Delete && root.has-selection) {
+                if (!root.delete-armed) {
+                    root.delete-armed = true;
+                    root.delete-btn-text = "Точно удалить?";
+                } else {
+                    root.delete-medicine();
+                }
+                accept
+            } else if (event.text == Key.Escape) {
+                if (root.pkg-editing) {
+                    root.pkg-cancel-edit();
+                } else if (root.delete-armed) {
+                    root.delete-armed = false;
+                    root.delete-btn-text = "Удалить лекарство";
+                }
+                accept
+            } else {
+                reject
+            }
+        }
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 10px;
+
+        // ===== Тулбар =====
+        HorizontalLayout {
+            spacing: 10px;
+            vertical-stretch: 0;
+
+            Text {
+                text: "Аптечка";
+                font-size: 20px;
+                font-weight: 800;
+                vertical-alignment: center;
+                color: Theme.text;
+            }
+            Rectangle { width: 6px; }
+            search-input := LineEdit {
+                text <=> root.search-text;
+                placeholder-text: "Поиск по названию, форме, заметкам…";
+                horizontal-stretch: 1;
+                vertical-stretch: 0;
+                edited(text) => { root.search-edited(text); }
+            }
+            ComboBox {
+                width: 175px;
+                model: ["Все лекарства", "Истекают скоро", "Просроченные"];
+                current-index <=> root.filter-index;
+                selected(value) => { root.filter-selected(root.filter-index); }
+            }
+            ComboBox {
+                width: 195px;
+                model: ["По ближайшему сроку", "По названию"];
+                current-index <=> root.sort-index;
+                selected(value) => { root.sort-selected(root.sort-index); }
+            }
+            AccentButton {
+                label: "+ Добавить лекарство";
+                clicked => { root.add-medicine(); }
+            }
+        }
+
+        // ===== Сводка =====
+        HorizontalLayout {
+            spacing: 8px;
+            vertical-stretch: 0;
+            SummaryChip {
+                label: root.summary-total;
+                dot-c: Theme.muted;
+                label-c: Theme.muted;
+                bg-c: Theme.panel;
+            }
+            SummaryChip {
+                label: root.summary-soon;
+                dot-c: Theme.warn;
+                label-c: Theme.warn-text;
+                bg-c: Theme.warn-tint;
+            }
+            SummaryChip {
+                label: root.summary-expired;
+                dot-c: Theme.danger;
+                label-c: Theme.danger-text;
+                bg-c: Theme.danger-tint;
+            }
+        }
+
+        // ===== Основная область: список + детали =====
+        HorizontalLayout {
+            spacing: 10px;
+            vertical-stretch: 1;
+
+            // Панель списка
+            Rectangle {
+                width: 400px;
+                horizontal-stretch: 0;
+                vertical-stretch: 1;
+                border-radius: 12px;
+                background: Theme.panel;
+                border-width: 1px;
+                border-color: Theme.hairline;
+                clip: true;
+
+                VerticalLayout {
+                    x: 0;
+                    y: 0;
+                    width: parent.width;
+                    height: parent.height;
+                    padding: 6px;
+                    spacing: 2px;
+
+                    Text {
+                        text: "Лекарства · \{root.medicines.length}";
+                        font-size: 11px;
+                        font-weight: 700;
+                        color: Theme.muted;
+                        height: 22px;
+                        vertical-alignment: center;
+                    }
+
+                    ListView {
+                        vertical-stretch: 1;
+                        for m in root.medicines: Rectangle {
+                            height: 68px;
+                            MedRow {
+                                x: 0;
+                                y: 2px;
+                                width: parent.width;
+                                height: 64px;
+                                data: m;
+                                selected: m.id == root.selected-id;
+                                clicked => { root.select-medicine(m.id); }
+                            }
+                        }
+                    }
+                }
+
+                if (root.medicines.length == 0): Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    Rectangle {
+                        width: 88px;
+                        height: 88px;
+                        x: (parent.width - 88px) / 2;
+                        y: 64px;
+                        border-radius: 44px;
+                        background: Theme.accent-tint-soft;
+                        border-width: 2px;
+                        border-color: Theme.accent-tint;
+                        Rectangle {
+                            width: 10px;
+                            height: 40px;
+                            x: (parent.width - 10px) / 2;
+                            y: (parent.height - 40px) / 2;
+                            border-radius: 3px;
+                            background: Theme.accent;
+                        }
+                        Rectangle {
+                            width: 40px;
+                            height: 10px;
+                            x: (parent.width - 40px) / 2;
+                            y: (parent.height - 10px) / 2;
+                            border-radius: 3px;
+                            background: Theme.accent;
+                        }
+                    }
+                    Text {
+                        width: parent.width - 48px;
+                        x: 24px;
+                        y: 180px;
+                        text: root.list-empty-text;
+                        wrap: word-wrap;
+                        horizontal-alignment: center;
+                        font-size: 14px;
+                        color: Theme.muted;
+                    }
+                }
+            }
+
+            Rectangle {
+                width: 1px;
+                background: Theme.hairline;
+            }
+
+            // Детали выбранного лекарства
+            Rectangle {
+                horizontal-stretch: 1;
+                vertical-stretch: 1;
+
+                if (!root.has-selection): Text {
+                    width: 100%;
+                    height: 100%;
+                    text: "Выберите лекарство в списке\nили нажмите «+ Добавить лекарство»";
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                    wrap: word-wrap;
+                    font-size: 15px;
+                    color: Theme.muted;
+                }
+
+                if (root.has-selection): VerticalLayout {
+                    spacing: 10px;
+
+                    VerticalLayout {
+                        spacing: 3px;
+                        FieldLabel { text: "Название"; }
+                        LineEdit {
+                            text <=> root.detail-name;
+                            font-size: 16px;
+                            edited(text) => { root.name-edited(text); }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout {
+                            spacing: 3px;
+                            width: 190px;
+                            FieldLabel { text: "Форма"; }
+                            ComboBox {
+                                model: root.form-options;
+                                current-index <=> root.detail-form-index;
+                                selected(value) => { root.form-selected(root.detail-form-index); }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout {
+                            spacing: 3px;
+                            width: 190px;
+                            alignment: end;
+                            FieldLabel { text: "Действия"; }
+                            GhostButton {
+                                label: root.delete-btn-text;
+                                danger: true;
+                                clicked => {
+                                    if (!root.delete-armed) {
+                                        root.delete-armed = true;
+                                        root.delete-btn-text = "Точно удалить?";
+                                    } else {
+                                        root.delete-medicine();
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 3px;
+                        FieldLabel { text: "Заметки"; }
+                        TextEdit {
+                            height: 56px;
+                            vertical-stretch: 0;
+                            text <=> root.detail-note;
+                            edited(text) => { root.note-edited(text); }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: root.packages-header;
+                            font-size: 13px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                            color: Theme.text;
+                        }
+                        Text {
+                            text: "у одного лекарства может быть несколько упаковок с разными сроками";
+                            font-size: 11px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            color: Theme.muted;
+                        }
+                    }
+
+                    // Таблица упаковок — карточки
+                    Rectangle {
+                        vertical-stretch: 1;
+                        min-height: 100px;
+                        border-radius: 12px;
+                        background: Theme.panel;
+                        border-width: 1px;
+                        border-color: Theme.hairline;
+                        clip: true;
+
+                        VerticalLayout {
+                            x: 0;
+                            y: 0;
+                            width: parent.width;
+                            height: parent.height;
+                            padding: 6px;
+
+                            ListView {
+                                vertical-stretch: 1;
+                                for p in root.packages: Rectangle {
+                                    height: 66px;
+                                    Rectangle {
+                                        x: 0;
+                                        y: 3px;
+                                        width: parent.width;
+                                        height: 60px;
+                                        border-radius: 8px;
+                                        background: Theme.card;
+                                        border-width: 1px;
+                                        border-color: Theme.hairline;
+                                        drop-shadow-blur: 5px;
+                                        drop-shadow-offset-y: 1px;
+                                        drop-shadow-color: Palette.color-scheme == ColorScheme.dark ? transparent : rgba(15, 23, 42, 0.08);
+
+                                        HorizontalLayout {
+                                            padding-left: 12px;
+                                            padding-right: 8px;
+                                            padding-top: 8px;
+                                            padding-bottom: 8px;
+                                            spacing: 10px;
+
+                                            VerticalLayout {
+                                                width: 10px;
+                                                alignment: center;
+                                                StatusDot { status: p.status; }
+                                            }
+                                            VerticalLayout {
+                                                spacing: 3px;
+                                                horizontal-stretch: 1;
+                                                HorizontalLayout {
+                                                    spacing: 8px;
+                                                    Text {
+                                                        text: p.expiry;
+                                                        font-size: 15px;
+                                                        font-weight: 700;
+                                                        vertical-alignment: center;
+                                                        color: Theme.text;
+                                                    }
+                                                    Text {
+                                                        text: p.quantity;
+                                                        font-size: 12px;
+                                                        vertical-alignment: center;
+                                                        overflow: elide;
+                                                        color: Theme.muted;
+                                                        horizontal-stretch: 1;
+                                                    }
+                                                    Badge {
+                                                        status: p.status;
+                                                        text: p.days-text;
+                                                    }
+                                                }
+                                                Text {
+                                                    text: p.note;
+                                                    font-size: 12px;
+                                                    overflow: elide;
+                                                    color: Theme.muted;
+                                                }
+                                            }
+                                            VerticalLayout {
+                                                alignment: center;
+                                                HorizontalLayout {
+                                                    spacing: 6px;
+                                                    GhostButton {
+                                                        label: "Клонировать";
+                                                        clicked => { root.pkg-clone(p.id); }
+                                                    }
+                                                    GhostButton {
+                                                        label: "Изменить";
+                                                        clicked => { root.pkg-start-edit(p.id); }
+                                                    }
+                                                    GhostButton {
+                                                        label: "Удалить";
+                                                        danger: true;
+                                                        clicked => { root.pkg-delete(p.id); }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if (root.packages.length == 0): Rectangle {
+                            width: 100%;
+                            height: 100%;
+                            Text {
+                                width: parent.width - 48px;
+                                x: 24px;
+                                y: 24px;
+                                text: "Упаковок пока нет. Добавьте первую — форма ниже.";
+                                wrap: word-wrap;
+                                horizontal-alignment: center;
+                                font-size: 13px;
+                                color: Theme.muted;
+                            }
+                        }
+                    }
+
+                    // Форма упаковки
+                    Rectangle {
+                        vertical-stretch: 0;
+                        border-radius: 12px;
+                        border-width: 1px;
+                        border-color: Theme.hairline;
+                        background: Theme.panel;
+
+                        VerticalLayout {
+                            padding: 12px;
+                            spacing: 8px;
+
+                            Text {
+                                text: root.pkg-editing ? "Изменение упаковки" : "Новая упаковка";
+                                font-size: 13px;
+                                font-weight: 700;
+                                color: root.pkg-editing ? Theme.accent : Theme.text;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 10px;
+                                VerticalLayout {
+                                    spacing: 3px;
+                                    width: 160px;
+                                    FieldLabel { text: "Срок годности"; }
+                                    LineEdit {
+                                        text <=> root.pkg-expiry;
+                                        placeholder-text: "ГГГГ-ММ-ДД или ММ.ГГГГ";
+                                        edited(text) => { root.pkg-expiry-edited(text); }
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 3px;
+                                    width: 140px;
+                                    FieldLabel { text: "Количество"; }
+                                    LineEdit {
+                                        text <=> root.pkg-quantity;
+                                        placeholder-text: "напр. 2 уп.";
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 3px;
+                                    horizontal-stretch: 1;
+                                    alignment: end;
+                                    FieldLabel { text: "Комментарий"; }
+                                    LineEdit {
+                                        text <=> root.pkg-note;
+                                        placeholder-text: "необязательно";
+                                    }
+                                }
+                            }
+
+                            Text {
+                                text: root.pkg-validation;
+                                font-size: 12px;
+                                color: root.pkg-validation-color;
+                                overflow: elide;
+                            }
+
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text {
+                                    text: "Быстро:";
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                    color: Theme.muted;
+                                }
+                                GhostButton {
+                                    label: "+6 мес.";
+                                    clicked => { root.pkg-quick(6); }
+                                }
+                                GhostButton {
+                                    label: "+1 год";
+                                    clicked => { root.pkg-quick(12); }
+                                }
+                                GhostButton {
+                                    label: "+2 года";
+                                    clicked => { root.pkg-quick(24); }
+                                }
+                                Rectangle { horizontal-stretch: 1; }
+                                if (root.pkg-editing): GhostButton {
+                                    label: "Отмена";
+                                    clicked => { root.pkg-cancel-edit(); }
+                                }
+                                AccentButton {
+                                    label: root.pkg-editing ? "Сохранить упаковку" : "Добавить упаковку";
+                                    enabled: root.pkg-save-enabled;
+                                    clicked => { root.pkg-save(); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ===== Статусная строка =====
+        HorizontalLayout {
+            spacing: 8px;
+            vertical-stretch: 0;
+            Text {
+                text: "«Истекает», если осталось ≤";
+                font-size: 12px;
+                vertical-alignment: center;
+                color: Theme.muted;
+            }
+            SpinBox {
+                width: 95px;
+                minimum: 5;
+                maximum: 365;
+                value <=> root.warn-days;
+                edited(value) => { root.warn-days-changed(value); }
+            }
+            Text {
+                text: "дн.";
+                font-size: 12px;
+                vertical-alignment: center;
+                color: Theme.muted;
+            }
+            GhostButton {
+                label: "Отменить";
+                enabled: root.can-undo;
+                clicked => { root.undo-history(); }
+            }
+            GhostButton {
+                label: "Вернуть";
+                enabled: root.can-redo;
+                clicked => { root.redo-history(); }
+            }
+            GhostButton {
+                label: "Экспорт CSV";
+                clicked => { root.export-csv(); }
+            }
+            GhostButton {
+                label: "Тема";
+                clicked => {
+                    Palette.color-scheme = Palette.color-scheme == ColorScheme.dark
+                        ? ColorScheme.light
+                        : ColorScheme.dark;
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            Text {
+                text: root.status-message;
+                font-size: 12px;
+                vertical-alignment: center;
+                overflow: elide;
+                horizontal-stretch: 2;
+                color: Theme.muted;
+            }
+        }
+        }
+    }
+}

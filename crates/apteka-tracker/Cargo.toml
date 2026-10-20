@@ -1,0 +1,17 @@
+[package]
+name = "apteka-tracker"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+description = "Домашняя аптечка: учёт сроков годности лекарств (GUI на Slint)"
+
+[dependencies]
+apteka-core = { path = "../apteka-core" }
+slint = "1.18"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }
+
+[build-dependencies]
+slint-build = "1.18"
+winresource = "0.1"

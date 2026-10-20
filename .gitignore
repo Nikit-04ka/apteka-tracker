@@ -1,0 +1,6 @@
+/target
+*.json.tmp
+apteka_data.json
+apteka_export.csv
+apteka.lock
+backups/
