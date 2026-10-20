@@ -6,7 +6,7 @@ use apteka_core::history::History;
 use apteka_core::model::*;
 use apteka_core::storage;
 
-use apteka_core::chrono::{Local, Months, NaiveDate};
+use apteka_core::chrono::{Datelike, Local, Months, NaiveDate};
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -82,7 +82,15 @@ struct State {
     pkg_edit_id: i32,
     /// вид последней склеенной правки для истории (None — после структурных мутаций)
     last_commit_kind: Option<EditKind>,
+    /// календарь: отображаемый месяц
+    cal_year: i32,
+    cal_month: u32,
 }
+
+const MONTHS_RU: [&str; 12] = [
+    "Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь",
+    "Октябрь", "Ноябрь", "Декабрь",
+];
 
 impl State {
     fn selected(&self) -> Option<&Medicine> {
@@ -261,6 +269,12 @@ fn rebuild_packages(ui: &AppWindow, st: &State) {
             } else {
                 String::new()
             };
+            let photo = if p.photo.is_empty() {
+                slint::Image::default()
+            } else {
+                slint::Image::load_from_path(&storage::exe_dir().join("photos").join(&p.photo))
+                    .unwrap_or_default()
+            };
             PackageRow {
                 id: p.id,
                 expiry: fmt_date_display(p.expiry, p.month_only).into(),
@@ -277,6 +291,7 @@ fn rebuild_packages(ui: &AppWindow, st: &State) {
                 status_text: status_text(status, days).into(),
                 opened: p.opened.is_some(),
                 disposed: p.is_disposed(),
+                photo,
             }
         })
         .collect();
@@ -349,6 +364,37 @@ fn move_selection(ui: &AppWindow, st: &mut State, delta: i32) {
 /// Краткое описание упаковки для журнала.
 fn pkg_desc(p: &Package) -> String {
     format!("срок {}", fmt_date_display(p.expiry, p.month_only))
+}
+
+/// Календарная сетка: 6 недель × 7 дней от отображаемого месяца.
+fn cal_rebuild(ui: &AppWindow, st: &State) {
+    let Some(first) = NaiveDate::from_ymd_opt(st.cal_year, st.cal_month, 1) else { return };
+    let week_start =
+        first - apteka_core::chrono::Duration::days(first.weekday().num_days_from_monday() as i64);
+    let t = today();
+    let mut rows: Vec<CalRow> = Vec::new();
+    for w in 0..6u32 {
+        let cells: Vec<CalCell> = (0..7u32)
+            .map(|d| {
+                let day = week_start + apteka_core::chrono::Duration::days((w * 7 + d) as i64);
+                CalCell {
+                    label: format!("{}", day.day()).into(),
+                    ymd: day.format("%Y-%m-%d").to_string().into(),
+                    in_month: day.month() == st.cal_month && day.year() == st.cal_year,
+                    today: day == t,
+                }
+            })
+            .collect();
+        rows.push(CalRow {
+            cells: ModelRc::from(Rc::new(VecModel::from(cells))),
+        });
+    }
+    ui.set_cal_weeks(ModelRc::from(Rc::new(VecModel::from(rows))));
+    ui.set_cal_month_label(SharedString::from(format!(
+        "{} {}",
+        MONTHS_RU[(st.cal_month - 1) as usize],
+        st.cal_year
+    )));
 }
 
 fn refresh_all(ui: &AppWindow, st: &mut State, reset_form: bool) {
@@ -560,6 +606,8 @@ fn main() -> Result<(), slint::PlatformError> {
         sort_idx: 0,
         pkg_edit_id: -1,
         last_commit_kind: None,
+        cal_year: Local::now().year(),
+        cal_month: Local::now().month(),
     }));
 
     // Стартовое выделение: лекарство с самым близким сроком годности
@@ -639,6 +687,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let mut st = s.borrow_mut();
             st.selected_id = id;
             ui.set_selected_id(id);
+            ui.set_suggestions(ModelRc::default());
             reset_delete_armed(&ui);
             update_details(&ui, &mut st, true);
         });
@@ -706,6 +755,28 @@ fn main() -> Result<(), slint::PlatformError> {
                 m.name = text.to_string();
             }
             commit_history_coalesced(&ui, &mut st, prev, EditKind::Name);
+            // автодополнение: имена других лекарств с тем же началом
+            let needle = text.trim().to_lowercase();
+            let mut sugg: Vec<SharedString> = Vec::new();
+            if !needle.is_empty() {
+                for m in &st.db.medicines {
+                    if m.id == st.selected_id {
+                        continue;
+                    }
+                    if m.name.to_lowercase().starts_with(&needle)
+                        && !m.name.to_lowercase().eq(&needle)
+                    {
+                        let cand = SharedString::from(m.name.clone());
+                        if !sugg.contains(&cand) {
+                            sugg.push(cand);
+                        }
+                        if sugg.len() >= 6 {
+                            break;
+                        }
+                    }
+                }
+            }
+            ui.set_suggestions(ModelRc::from(Rc::new(VecModel::from(sugg))));
             let id = st.selected_id;
             update_row(&ui, id, &st);
             persist(&ui, &st);
@@ -941,6 +1012,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             opened: None,
                             open_period_days,
                             disposed: None,
+                            photo: String::new(),
                         });
                         journal_note = Some((
                             m.name.clone(),
@@ -1166,6 +1238,312 @@ fn main() -> Result<(), slint::PlatformError> {
                 .collect();
             j.set_events(ModelRc::from(Rc::new(VecModel::from(rows))));
             let _ = j.show();
+        });
+    }
+
+    // Автодополнение названия по уже заведённым лекарствам
+    {
+        let h = ui.as_weak();
+        let s = state.clone();
+        ui.on_suggestion_picked(move |text| {
+            let ui = h.unwrap();
+            let mut st = s.borrow_mut();
+            let prev = st.db.clone();
+            if let Some(m) = st.selected_mut() {
+                m.name = text.to_string();
+            }
+            commit_history(&ui, &mut st, prev);
+            ui.set_detail_name(text);
+            ui.set_suggestions(ModelRc::default());
+            let id = st.selected_id;
+            update_row(&ui, id, &st);
+            persist(&ui, &st);
+        });
+    }
+
+    // Календарь: открытие (месяц из текущего срока), листание, выбор дня
+    {
+        let h = ui.as_weak();
+        let s = state.clone();
+        ui.on_cal_month_opened(move || {
+            let ui = h.unwrap();
+            let mut st = s.borrow_mut();
+            match parse_date_input(&ui.get_pkg_expiry()) {
+                Some((d, _)) => {
+                    st.cal_year = d.year();
+                    st.cal_month = d.month();
+                }
+                None => {
+                    let t = today();
+                    st.cal_year = t.year();
+                    st.cal_month = t.month();
+                }
+            }
+            cal_rebuild(&ui, &st);
+        });
+    }
+    {
+        let h = ui.as_weak();
+        let s = state.clone();
+        ui.on_cal_prev_month(move || {
+            let ui = h.unwrap();
+            let mut st = s.borrow_mut();
+            st.cal_month -= 1;
+            if st.cal_month == 0 {
+                st.cal_month = 12;
+                st.cal_year -= 1;
+            }
+            cal_rebuild(&ui, &st);
+        });
+    }
+    {
+        let h = ui.as_weak();
+        let s = state.clone();
+        ui.on_cal_next_month(move || {
+            let ui = h.unwrap();
+            let mut st = s.borrow_mut();
+            st.cal_month += 1;
+            if st.cal_month > 12 {
+                st.cal_month = 1;
+                st.cal_year += 1;
+            }
+            cal_rebuild(&ui, &st);
+        });
+    }
+    {
+        let h = ui.as_weak();
+        let s = state.clone();
+        ui.on_cal_pick(move |ymd| {
+            let ui = h.unwrap();
+            let st = s.borrow_mut();
+            if let Ok(d) = NaiveDate::parse_from_str(ymd.as_str(), "%Y-%m-%d") {
+                ui.set_pkg_expiry(SharedString::from(fmt_date(d)));
+                validate_pkg_form(&ui, &st);
+            }
+        });
+    }
+
+    // Список покупок: окно + копирование в буфер обмена
+    let shopping = ShoppingWindow::new()?;
+    {
+        let s = state.clone();
+        let jh = shopping.as_weak();
+        ui.on_open_shopping(move || {
+            let j = jh.unwrap();
+            let st = s.borrow();
+            let rows: Vec<SharedString> = shopping_list(&st.db, today())
+                .into_iter()
+                .map(SharedString::from)
+                .collect();
+            j.set_lines(ModelRc::from(Rc::new(VecModel::from(rows))));
+            j.set_note(SharedString::new());
+            let _ = j.show();
+        });
+    }
+    {
+        let jh = shopping.as_weak();
+        shopping.on_copy_to_clipboard(move || {
+            let j = jh.unwrap();
+            let model = j.get_lines();
+            let text: String = (0..model.row_count())
+                .filter_map(|i| model.row_data(i))
+                .collect::<Vec<_>>()
+                .join("\n");
+            let note = match arboard::Clipboard::new() {
+                Ok(mut cb) => match cb.set_text(text.clone()) {
+                    Ok(()) => format!(
+                        "Скопировано в буфер обмена ({} поз.)",
+                        text.lines().count()
+                    ),
+                    Err(e) => format!("Не удалось скопировать: {e}"),
+                },
+                Err(e) => format!("Не удалось скопировать: {e}"),
+            };
+            j.set_note(SharedString::from(note));
+        });
+    }
+    {
+        let jh = shopping.as_weak();
+        shopping.on_close_clicked(move || {
+            let _ = jh.unwrap().hide();
+        });
+    }
+
+    // Резервные копии: окно восстановления
+    let backups = BackupsWindow::new()?;
+    let backup_files: Rc<RefCell<Vec<std::path::PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
+    {
+        let files = backup_files.clone();
+        let jh = backups.as_weak();
+        ui.on_open_backups(move || {
+            let j = jh.unwrap();
+            let files_now = storage::list_backups();
+            let rows: Vec<SharedString> = files_now
+                .iter()
+                .map(|p| SharedString::from(p.file_name().unwrap_or_default().to_string_lossy().to_string()))
+                .collect();
+            j.set_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
+            j.set_selected(-1);
+            j.set_note(SharedString::new());
+            *files.borrow_mut() = files_now;
+            let _ = j.show();
+        });
+    }
+    {
+        let h = ui.as_weak();
+        let s = state.clone();
+        let files = backup_files.clone();
+        let jh = backups.as_weak();
+        backups.on_restore(move |idx| {
+            let ui = h.unwrap();
+            let j = jh.unwrap();
+            let Some(path) = files.borrow().get(idx as usize).cloned() else { return };
+            // страховка: текущее состояние — в бэкап, и его же можно вернуть Ctrl+Z
+            let _ = storage::backup();
+            let db = storage::load_from(&path);
+            let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let mut st = s.borrow_mut();
+            let prev = st.db.clone();
+            st.history.commit(prev);
+            st.last_commit_kind = None;
+            st.db = db;
+            st.selected_id = -1;
+            ui.set_selected_id(-1);
+            reset_delete_armed(&ui);
+            refresh_all(&ui, &mut st, true);
+            sync_history_ui(&ui, &st);
+            st.db.journal_push("восстановлено из бэкапа", &fname, "");
+            persist(&ui, &st);
+            j.set_note(SharedString::from(format!("Восстановлено: {fname} (отменить — Ctrl+Z)")));
+        });
+    }
+    {
+        let jh = backups.as_weak();
+        backups.on_close_clicked(move || {
+            let _ = jh.unwrap().hide();
+        });
+    }
+
+    // Импорт CSV: окно выбора файла + разбор
+    let import_win = ImportWindow::new()?;
+    let import_files: Rc<RefCell<Vec<std::path::PathBuf>>> = Rc::new(RefCell::new(Vec::new()));
+    {
+        let files = import_files.clone();
+        let jh = import_win.as_weak();
+        ui.on_open_import(move || {
+            let j = jh.unwrap();
+            let mut files_now: Vec<std::path::PathBuf> = std::fs::read_dir(storage::exe_dir())
+                .into_iter()
+                .flatten()
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| {
+                    p.is_file()
+                        && p.extension()
+                            .is_some_and(|ext| ext.eq_ignore_ascii_case("csv"))
+                })
+                .collect();
+            files_now.sort();
+            files_now.reverse();
+            let rows: Vec<SharedString> = files_now
+                .iter()
+                .map(|p| SharedString::from(p.file_name().unwrap_or_default().to_string_lossy().to_string()))
+                .collect();
+            j.set_rows(ModelRc::from(Rc::new(VecModel::from(rows))));
+            j.set_selected(-1);
+            j.set_note(SharedString::new());
+            *files.borrow_mut() = files_now;
+            let _ = j.show();
+        });
+    }
+    {
+        let h = ui.as_weak();
+        let s = state.clone();
+        let files = import_files.clone();
+        let jh = import_win.as_weak();
+        import_win.on_do_import(move |idx| {
+            let ui = h.unwrap();
+            let j = jh.unwrap();
+            let Some(path) = files.borrow().get(idx as usize).cloned() else { return };
+            let (mut meds, skipped) = match storage::import_csv(&path) {
+                Ok(r) => r,
+                Err(e) => {
+                    j.set_note(SharedString::from(format!("Ошибка чтения: {e}")));
+                    return;
+                }
+            };
+            if meds.is_empty() {
+                j.set_note(SharedString::from("В файле нет корректных строк."));
+                return;
+            }
+            let mut st = s.borrow_mut();
+            let prev = st.db.clone();
+            let mut total_pkgs = 0usize;
+            for m in &mut meds {
+                m.id = st.db.new_med_id();
+                for p in &mut m.packages {
+                    p.id = st.db.new_pkg_id();
+                    total_pkgs += 1;
+                }
+                st.db.journal_push(
+                    "импорт из CSV",
+                    &m.name,
+                    &format!("упаковок: {}", m.packages.len()),
+                );
+            }
+            st.db.medicines.append(&mut meds);
+            commit_history(&ui, &mut st, prev);
+            st.selected_id = -1;
+            ui.set_selected_id(-1);
+            refresh_all(&ui, &mut st, true);
+            persist(&ui, &st);
+            j.set_note(SharedString::from(format!(
+                "Импортировано лекарств: {} (упаковок: {total_pkgs}, пропущено строк: {skipped})",
+                meds.len()
+            )));
+        });
+    }
+    {
+        let jh = import_win.as_weak();
+        import_win.on_close_clicked(move || {
+            let _ = jh.unwrap().hide();
+        });
+    }
+
+    // Фото упаковки: выбор файла и копия в photos/
+    {
+        let h = ui.as_weak();
+        let s = state.clone();
+        ui.on_pick_photo(move || {
+            let ui = h.unwrap();
+            let mut st = s.borrow_mut();
+            let pid = st.pkg_edit_id;
+            if pid < 0 {
+                return;
+            }
+            let Some(file) = rfd::FileDialog::new()
+                .set_title("Выберите фото упаковки")
+                .add_filter("Изображения", &["png", "jpg", "jpeg"])
+                .pick_file()
+            else {
+                return;
+            };
+            let ext = file
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_lowercase())
+                .unwrap_or_else(|| "png".into());
+            let dir = storage::exe_dir().join("photos");
+            let _ = std::fs::create_dir_all(&dir);
+            let fname = format!("pkg_{pid}.{ext}");
+            if std::fs::copy(&file, dir.join(&fname)).is_ok() {
+                if let Some(m) = st.selected_mut() {
+                    if let Some(p) = m.packages.iter_mut().find(|p| p.id == pid) {
+                        p.photo = fname;
+                    }
+                }
+                rebuild_packages(&ui, &st);
+                ui.set_status_message(SharedString::from("Фото упаковки обновлено"));
+            }
         });
     }
 

@@ -71,6 +71,9 @@ pub struct Package {
     /// Списание — упаковка скрыта из активного учёта, но остаётся в базе.
     #[serde(default)]
     pub disposed: Option<DisposedInfo>,
+    /// Имя файла фото в каталоге `photos/` рядом с exe (пусто — нет фото).
+    #[serde(default)]
+    pub photo: String,
 }
 
 impl Package {
@@ -290,6 +293,39 @@ pub fn days_short(status: i32, days: i64) -> String {
     }
 }
 
+/// Строки «списка покупок»: активные упаковки, которые просрочены
+/// или истекают в пределах порога. Одна строка на упаковку.
+pub fn shopping_list(db: &Database, today: NaiveDate) -> Vec<String> {
+    let mut rows = Vec::new();
+    for m in &db.medicines {
+        for p in &m.packages {
+            if p.is_disposed() {
+                continue;
+            }
+            let days = days_left(p.effective_expiry(), today);
+            if days > db.warn_days as i64 {
+                continue;
+            }
+            let when = if days < 0 {
+                format!("ПРОСРОЧЕНО на {} дн.", -days)
+            } else if days == 0 {
+                "истекает сегодня".to_string()
+            } else {
+                format!("осталось {} дн.", days)
+            };
+            rows.push(format!(
+                "{} ({}): {} — {}, годен до {}",
+                m.name,
+                if m.form.is_empty() { "без формы" } else { &m.form },
+                if p.quantity.is_empty() { "упаковка" } else { &p.quantity },
+                when,
+                fmt_date_display(p.effective_expiry(), p.month_only && p.opened.is_none()),
+            ));
+        }
+    }
+    rows
+}
+
 /// Худший статус по всем АКТИВНЫМ (не списанным) упаковкам
 /// и ближайшая дата окончания срока.
 pub fn medicine_info(m: &Medicine, today: NaiveDate, warn_days: i64) -> MedInfo {
@@ -334,6 +370,7 @@ mod tests {
             month_only,
             quantity: String::new(),
             note: String::new(),
+            photo: String::new(),
             price: None,
             opened: None,
             open_period_days: None,
@@ -487,6 +524,7 @@ mod tests {
                 opened: None,
                 open_period_days: None,
                 disposed: Some(DisposedInfo { date: d("2026-10-01"), reason: REASON_EXPIRED }),
+                photo: String::new(),
             }],
         };
         let info = medicine_info(&m, d("2026-10-20"), 60);
@@ -510,6 +548,43 @@ mod tests {
     }
 
     #[test]
+    fn shopping_list_includes_only_problem_packages() {
+        let mut db = Database { warn_days: 60, ..Default::default() };
+        let today = d("2026-10-20");
+        let mk = |name: &str, expiry: NaiveDate, disposed: Option<DisposedInfo>| Medicine {
+            id: 0,
+            name: name.to_string(),
+            form: "Таблетки".to_string(),
+            note: String::new(),
+            packages: vec![Package {
+                id: 0,
+                expiry,
+                month_only: false,
+                quantity: "1 уп.".to_string(),
+                note: String::new(),
+                photo: String::new(),
+                price: None,
+                opened: None,
+                open_period_days: None,
+                disposed,
+            }],
+        };
+        db.medicines.push(mk("Просрочка", d("2026-09-01"), None));
+        db.medicines.push(mk("Скоро", d("2026-11-25"), None));
+        db.medicines.push(mk("Запас", d("2027-06-01"), None));
+        db.medicines.push(mk(
+            "Списано",
+            d("2026-09-01"),
+            Some(DisposedInfo { date: today, reason: REASON_EXPIRED }),
+        ));
+        let rows = shopping_list(&db, today);
+        assert_eq!(rows.len(), 2, "только просрочка и истекающие");
+        assert!(rows[0].starts_with("Просрочка"));
+        assert!(rows[0].contains("ПРОСРОЧЕНО"));
+        assert!(rows[1].starts_with("Скоро"));
+    }
+
+    #[test]
     fn database_ids_increment() {
         let mut db = Database::default();
         assert_eq!(db.new_med_id(), 1);
@@ -518,3 +593,4 @@ mod tests {
         assert_eq!(db.next_med_id, 3);
     }
 }
+

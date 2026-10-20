@@ -26,6 +26,19 @@ export struct PackageRow {
     status-text: string,
     opened: bool,
     disposed: bool,
+    photo: image,
+}
+
+// Ячейка календаря и строка календарной сетки
+export struct CalCell {
+    label: string,
+    ymd: string,
+    in-month: bool,
+    today: bool,
+}
+
+export struct CalRow {
+    cells: [CalCell],
 }
 
 // ===== Токены дизайна (единая точка правды, адаптив к теме) =====
@@ -350,6 +363,16 @@ export component AppWindow inherits Window {
     callback pkg-restore(int);
     callback toggle-show-disposed();
     callback open-journal();
+    callback open-shopping();
+    callback open-backups();
+    callback open-import();
+    callback import-csv(int);
+    callback pick-photo();
+    callback suggestion-picked(string);
+    callback cal-month-opened();
+    callback cal-prev-month();
+    callback cal-next-month();
+    callback cal-pick(string);
     callback pkg-save();
     callback pkg-cancel-edit();
     callback pkg-expiry-edited(string);
@@ -368,6 +391,13 @@ export component AppWindow inherits Window {
     in-out property <string> summary-cost: "Стоимость: 0 руб.";
     in-out property <string> pkg-price: "";
     in-out property <string> pkg-period: "";
+
+    // Автодополнение названия
+    in-out property <[string]> suggestions;
+
+    // Календарь
+    in-out property <string> cal-month-label: "";
+    in-out property <[CalRow]> cal-weeks;
 
     // ===== Клавиатура: ↑/↓ — список, Ctrl+N — новое лекарство, Ctrl+F — поиск,
     // Delete — удалить (в два шага), Escape — отмена =====
@@ -731,6 +761,12 @@ export component AppWindow inherits Window {
                                                 alignment: center;
                                                 StatusDot { status: p.disposed ? 4 : p.status; }
                                             }
+                                            if (p.photo.width > 0): Image {
+                                                source: p.photo;
+                                                width: 52px;
+                                                height: 58px;
+                                                image-fit: contain;
+                                            }
                                             VerticalLayout {
                                                 spacing: 3px;
                                                 horizontal-stretch: 1;
@@ -860,12 +896,100 @@ export component AppWindow inherits Window {
                                 spacing: 10px;
                                 VerticalLayout {
                                     spacing: 3px;
-                                    width: 160px;
+                                    width: 245px;
                                     FieldLabel { text: "Срок годности"; }
-                                    LineEdit {
-                                        text <=> root.pkg-expiry;
-                                        placeholder-text: "ГГГГ-ММ-ДД или ММ.ГГГГ";
-                                        edited(text) => { root.pkg-expiry-edited(text); }
+                                    HorizontalLayout {
+                                        spacing: 4px;
+                                        expiry-edit := LineEdit {
+                                            width: 200px;
+                                            text <=> root.pkg-expiry;
+                                            placeholder-text: "ГГГГ-ММ-ДД или ММ.ГГГГ";
+                                            edited(text) => { root.pkg-expiry-edited(text); }
+                                        }
+                                        GhostButton {
+                                            width: 38px;
+                                            label: "▼";
+                                            clicked => {
+                                                root.cal-month-opened();
+                                                cal-popup.show();
+                                            }
+                                        }
+                                    }
+                                    cal-popup := PopupWindow {
+                                        width: 262px;
+                                        height: 330px;
+                                        Rectangle {
+                                            border-radius: 10px;
+                                            background: Theme.card;
+                                            border-width: 1px;
+                                            border-color: Theme.hairline;
+                                            VerticalLayout {
+                                                padding: 8px;
+                                                spacing: 4px;
+
+                                                HorizontalLayout {
+                                                    spacing: 4px;
+                                                    GhostButton {
+                                                        width: 38px;
+                                                        label: "‹";
+                                                        clicked => { cal-prev-month(); }
+                                                    }
+                                                    Text {
+                                                        text: cal-month-label;
+                                                        font-size: 13px;
+                                                        font-weight: 700;
+                                                        horizontal-alignment: center;
+                                                        vertical-alignment: center;
+                                                        horizontal-stretch: 1;
+                                                        color: Theme.text;
+                                                    }
+                                                    GhostButton {
+                                                        width: 38px;
+                                                        label: "›";
+                                                        clicked => { cal-next-month(); }
+                                                    }
+                                                }
+                                                HorizontalLayout {
+                                                    spacing: 0;
+                                                    Text { width: 34px; text: "Пн"; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { width: 34px; text: "Вт"; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { width: 34px; text: "Ср"; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { width: 34px; text: "Чт"; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { width: 34px; text: "Пт"; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { width: 34px; text: "Сб"; font-size: 10px; horizontal-alignment: center; color: Theme.warn-text; }
+                                                    Text { width: 34px; text: "Вс"; font-size: 10px; horizontal-alignment: center; color: Theme.warn-text; }
+                                                }
+                                                for row in cal-weeks: HorizontalLayout {
+                                                    spacing: 0;
+                                                    for c in row.cells: Rectangle {
+                                                        width: 34px;
+                                                        height: 32px;
+                                                        cta := TouchArea {
+                                                            mouse-cursor: c.ymd == "" ? default : pointer;
+                                                            clicked => {
+                                                                if (c.ymd != "") {
+                                                                    cal-pick(c.ymd);
+                                                                    cal-popup.close();
+                                                                }
+                                                            }
+                                                        }
+                                                        background: cta.has-hover && c.ymd != "" ? Theme.accent-tint-soft
+                                                            : c.today ? Theme.accent-tint
+                                                            : transparent;
+                                                        border-radius: 6px;
+                                                        Text {
+                                                            text: c.label;
+                                                            font-size: 12px;
+                                                            horizontal-alignment: center;
+                                                            vertical-alignment: center;
+                                                            width: parent.width;
+                                                            height: parent.height;
+                                                            color: !c.in-month ? Theme.muted : Theme.text;
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                                 VerticalLayout {
@@ -916,6 +1040,11 @@ export component AppWindow inherits Window {
 
                             HorizontalLayout {
                                 spacing: 8px;
+                                GhostButton {
+                                    label: "Фото…";
+                                    enabled: root.pkg-editing;
+                                    clicked => { root.pick-photo(); }
+                                }
                                 Text {
                                     text: "Быстро:";
                                     font-size: 12px;
@@ -944,6 +1073,39 @@ export component AppWindow inherits Window {
                                     enabled: root.pkg-save-enabled;
                                     clicked => { root.pkg-save(); }
                                 }
+                            }
+                        }
+                    }
+                }
+
+                if (root.has-selection && root.suggestions.length > 0): Rectangle {
+                    x: 12px;
+                    y: 88px;
+                    width: parent.width - 24px;
+                    height: min(root.suggestions.length, 6) * 30px + 8px;
+                    border-radius: 8px;
+                    background: Theme.card;
+                    border-width: 1px;
+                    border-color: Theme.accent;
+                    clip: true;
+
+                    VerticalLayout {
+                        padding: 4px;
+                        for s in root.suggestions: Rectangle {
+                            height: 28px;
+                            border-radius: 5px;
+                            background: sta.has-hover ? Theme.accent-tint-soft : transparent;
+                            sta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.suggestion-picked(s); }
+                            }
+                            Text {
+                                text: s;
+                                x: 10px;
+                                width: parent.width - 20px;
+                                vertical-alignment: center;
+                                font-size: 13px;
+                                color: Theme.text;
                             }
                         }
                     }
@@ -987,6 +1149,18 @@ export component AppWindow inherits Window {
             GhostButton {
                 label: "Журнал";
                 clicked => { root.open-journal(); }
+            }
+            GhostButton {
+                label: "Что купить";
+                clicked => { root.open-shopping(); }
+            }
+            GhostButton {
+                label: "Бэкапы";
+                clicked => { root.open-backups(); }
+            }
+            GhostButton {
+                label: "Импорт CSV";
+                clicked => { root.open-import(); }
             }
             GhostButton {
                 label: "Экспорт CSV";
@@ -1076,6 +1250,254 @@ export component JournalWindow inherits Window {
 
         HorizontalLayout {
             alignment: end;
+            Button {
+                text: "Закрыть";
+                clicked => { root.close-clicked(); }
+            }
+        }
+    }
+}
+
+// ===== Окно «Что купить» =====
+export component ShoppingWindow inherits Window {
+    title: "Что купить";
+    width: 580px;
+    height: 440px;
+    in-out property <[string]> lines;
+    in-out property <string> note;
+    callback copy-to-clipboard();
+    callback close-clicked();
+
+    background: Palette.color-scheme == ColorScheme.dark ? #1f2937 : #f8fafc;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        Rectangle {
+            vertical-stretch: 1;
+            border-radius: 8px;
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            clip: true;
+
+            VerticalLayout {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                padding: 10px;
+                spacing: 6px;
+
+                ListView {
+                    vertical-stretch: 1;
+                    for l in root.lines: Text {
+                        text: l;
+                        font-size: 13px;
+                        color: Theme.text;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            if (root.lines.length == 0): Rectangle {
+                width: 100%;
+                height: 100%;
+                Text {
+                    width: 100%;
+                    y: 40px;
+                    horizontal-alignment: center;
+                    text: "Покупать нечего — все сроки в порядке.";
+                    font-size: 13px;
+                    color: Theme.muted;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.note;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                color: Theme.muted;
+            }
+            GhostButton {
+                label: "Скопировать";
+                clicked => { root.copy-to-clipboard(); }
+            }
+            Button {
+                text: "Закрыть";
+                clicked => { root.close-clicked(); }
+            }
+        }
+    }
+}
+
+// ===== Окно резервных копий =====
+export component BackupsWindow inherits Window {
+    title: "Резервные копии";
+    width: 640px;
+    height: 440px;
+    in-out property <[string]> rows;
+    in-out property <int> selected: -1;
+    in-out property <string> note;
+    callback restore(int);
+    callback close-clicked();
+
+    background: Palette.color-scheme == ColorScheme.dark ? #1f2937 : #f8fafc;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        Text {
+            text: "Выберите копию и нажмите «Восстановить». Текущие данные перед этим будут сохранены в новый бэкап (и их можно вернуть через Ctrl+Z).";
+            wrap: word-wrap;
+            font-size: 12px;
+            color: Theme.muted;
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            border-radius: 8px;
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            clip: true;
+
+            VerticalLayout {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                padding: 6px;
+
+                ListView {
+                    vertical-stretch: 1;
+                    for r[i] in root.rows: Rectangle {
+                        height: 34px;
+                        border-radius: 6px;
+                        background: root.selected == i ? Theme.accent-tint : transparent;
+                        bta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.selected = i; }
+                        }
+                        Text {
+                            text: r;
+                            x: 10px;
+                            width: parent.width - 20px;
+                            vertical-alignment: center;
+                            font-size: 13px;
+                            color: root.selected == i ? Theme.accent : Theme.text;
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.note;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+                color: Theme.muted;
+            }
+            GhostButton {
+                label: "Восстановить";
+                enabled: root.selected >= 0;
+                clicked => { root.restore(root.selected); }
+            }
+            Button {
+                text: "Закрыть";
+                clicked => { root.close-clicked(); }
+            }
+        }
+    }
+}
+
+// ===== Окно импорта CSV =====
+export component ImportWindow inherits Window {
+    title: "Импорт CSV";
+    width: 640px;
+    height: 440px;
+    in-out property <[string]> rows;
+    in-out property <int> selected: -1;
+    in-out property <string> note;
+    callback do-import(int);
+    callback close-clicked();
+
+    background: Palette.color-scheme == ColorScheme.dark ? #1f2937 : #f8fafc;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        Text {
+            text: "Импорт понимает файлы экспорта этой программы (разделитель «;»). Выберите CSV-файл рядом с программой. Данные будут добавлены к существующим.";
+            wrap: word-wrap;
+            font-size: 12px;
+            color: Theme.muted;
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            border-radius: 8px;
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            clip: true;
+
+            VerticalLayout {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                padding: 6px;
+
+                ListView {
+                    vertical-stretch: 1;
+                    for r[i] in root.rows: Rectangle {
+                        height: 34px;
+                        border-radius: 6px;
+                        background: root.selected == i ? Theme.accent-tint : transparent;
+                        ita := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.selected = i; }
+                        }
+                        Text {
+                            text: r;
+                            x: 10px;
+                            width: parent.width - 20px;
+                            vertical-alignment: center;
+                            font-size: 13px;
+                            color: root.selected == i ? Theme.accent : Theme.text;
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.note;
+                font-size: 12px;
+                vertical-alignment: center;
+                horizontal-stretch: 1;
+                overflow: elide;
+                color: Theme.muted;
+            }
+            GhostButton {
+                label: "Импортировать";
+                enabled: root.selected >= 0;
+                clicked => { root.do-import(root.selected); }
+            }
             Button {
                 text: "Закрыть";
                 clicked => { root.close-clicked(); }

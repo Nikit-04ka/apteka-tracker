@@ -1,8 +1,8 @@
-//! Сохранение и загрузка данных: JSON рядом с exe (портативный режим) и экспорт CSV.
+//! Хранение и загрузка данных: JSON рядом с exe (портативный режим) и экспорт/импорт CSV.
 
 use crate::model::{
-    days_left, dispose_reason_text, fmt_date, fmt_date_display, status_for, status_text, Database,
-    STATUS_DISPOSED,
+    days_left, dispose_reason_text, fmt_date, fmt_date_display, parse_date_input, status_for,
+    status_text, Database, Medicine, Package, STATUS_DISPOSED,
 };
 use chrono::Local;
 use std::fs;
@@ -27,6 +27,63 @@ pub fn csv_file_path() -> PathBuf {
     exe_dir().join("apteka_export.csv")
 }
 
+/// Каталог резервных копий (рядом с exe).
+pub fn backup_dir() -> PathBuf {
+    exe_dir().join("backups")
+}
+
+/// Резервная копия файла данных при запуске; хранятся последние 5 копий.
+pub fn backup() -> io::Result<Option<PathBuf>> {
+    backup_from_to(&data_file_path(), &backup_dir(), 5)
+}
+
+/// Копирует `src` в каталог `dir` под именем с меткой времени и оставляет
+/// только `keep` самых свежих копий.
+pub fn backup_from_to(src: &Path, dir: &Path, keep: usize) -> io::Result<Option<PathBuf>> {
+    if !src.exists() {
+        return Ok(None);
+    }
+    fs::create_dir_all(dir)?;
+    let stamp = Local::now().format("%Y%m%d-%H%M%S");
+    let dst = dir.join(format!("apteka_{stamp}.json"));
+    fs::copy(src, &dst)?;
+    rotate_backups(dir, keep);
+    Ok(Some(dst))
+}
+
+/// Удаляет самые старые резервные копии, оставляя `keep` последних.
+/// Имена вида `apteka_YYYYMMDD-HHMMSS.json` сортируются хронологически.
+pub fn rotate_backups(dir: &Path, keep: usize) {
+    let mut files: Vec<PathBuf> = match fs::read_dir(dir) {
+        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+        Err(_) => return,
+    };
+    files.retain(|p| p.is_file() && p.extension().is_some_and(|ext| ext == "json"));
+    files.sort();
+    while files.len() > keep {
+        match files.first() {
+            Some(oldest) => {
+                let _ = fs::remove_file(oldest);
+                files.remove(0);
+            }
+            None => break,
+        }
+    }
+}
+
+/// Список резервных копий, самые свежие первыми.
+pub fn list_backups() -> Vec<PathBuf> {
+    let dir = backup_dir();
+    let mut files: Vec<PathBuf> = match fs::read_dir(&dir) {
+        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
+        Err(_) => return Vec::new(),
+    };
+    files.retain(|p| p.is_file() && p.extension().is_some_and(|ext| ext == "json"));
+    files.sort();
+    files.reverse();
+    files
+}
+
 /// Загружает базу; если файла нет — возвращает пустую базу.
 pub fn load() -> Database {
     load_from(&data_file_path())
@@ -39,7 +96,10 @@ pub fn load_from(path: &Path) -> Database {
         Ok(text) => match serde_json::from_str::<Database>(&text) {
             Ok(db) => db,
             Err(e) => {
-                eprintln!("Не удалось разобрать {}: {e}. Файл сохранён как повреждённый.", path.display());
+                eprintln!(
+                    "Не удалось разобрать {}: {e}. Файл сохранён как повреждённый.",
+                    path.display()
+                );
                 backup_corrupt(path);
                 Database::default()
             }
@@ -91,7 +151,12 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
     out.push_str("Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество;Цена;Открыта;Списано;Комментарий\r\n");
     for m in &db.medicines {
         if m.packages.is_empty() {
-            out.push_str(&format!("{};{};{};;;;;;;;\r\n", esc(&m.name), esc(&m.form), esc(&m.note)));
+            out.push_str(&format!(
+                "{};{};{};;;;;;;;\r\n",
+                esc(&m.name),
+                esc(&m.form),
+                esc(&m.note)
+            ));
             continue;
         }
         for p in &m.packages {
@@ -147,48 +212,116 @@ fn esc(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
 }
 
-/// Каталог резервных копий (рядом с exe).
-pub fn backup_dir() -> PathBuf {
-    exe_dir().join("backups")
-}
-
-/// Резервная копия файла данных при запуске; хранятся последние 5 копий.
-pub fn backup() -> io::Result<Option<PathBuf>> {
-    backup_from_to(&data_file_path(), &backup_dir(), 5)
-}
-
-/// Копирует `src` в каталог `dir` под именем с меткой времени и оставляет
-/// только `keep` самых свежих копий.
-pub fn backup_from_to(src: &Path, dir: &Path, keep: usize) -> io::Result<Option<PathBuf>> {
-    if !src.exists() {
-        return Ok(None);
-    }
-    fs::create_dir_all(dir)?;
-    let stamp = Local::now().format("%Y%m%d-%H%M%S");
-    let dst = dir.join(format!("apteka_{stamp}.json"));
-    fs::copy(src, &dst)?;
-    rotate_backups(dir, keep);
-    Ok(Some(dst))
-}
-
-/// Удаляет самые старые резервные копии, оставляя `keep` последних.
-/// Имена вида `apteka_YYYYMMDD-HHMMSS.json` сортируются хронологически.
-pub fn rotate_backups(dir: &Path, keep: usize) {
-    let mut files: Vec<PathBuf> = match fs::read_dir(dir) {
-        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
-        Err(_) => return,
-    };
-    files.retain(|p| p.is_file() && p.extension().is_some_and(|ext| ext == "json"));
-    files.sort();
-    while files.len() > keep {
-        match files.first() {
-            Some(oldest) => {
-                let _ = fs::remove_file(oldest);
-                files.remove(0);
+/// Разбор CSV-текста (наш экспорт: разделитель «;», кавычки с удвоением).
+pub fn parse_csv_text(text: &str) -> Vec<Vec<String>> {
+    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut row: Vec<String> = Vec::new();
+    let mut field = String::new();
+    let mut in_quotes = false;
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if in_quotes {
+            if c == '"' {
+                if chars.peek() == Some(&'"') {
+                    chars.next();
+                    field.push('"');
+                } else {
+                    in_quotes = false;
+                }
+            } else {
+                field.push(c);
             }
-            None => break,
+        } else {
+            match c {
+                '"' => in_quotes = true,
+                ';' => row.push(std::mem::take(&mut field)),
+                '\r' => {}
+                '\n' => {
+                    row.push(std::mem::take(&mut field));
+                    if !(row.len() == 1 && row[0].is_empty()) {
+                        rows.push(std::mem::take(&mut row));
+                    }
+                }
+                _ => field.push(c),
+            }
         }
     }
+    if !field.is_empty() || !row.is_empty() {
+        row.push(field);
+        rows.push(row);
+    }
+    rows
+}
+
+/// Импорт CSV-файла экспорта: возвращает лекарства (id проставит вызывающий)
+/// и количество пропущенных строк.
+pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
+    let text = fs::read_to_string(path)?;
+    let text = text.strip_prefix('\u{FEFF}').unwrap_or(&text);
+    let rows = parse_csv_text(text);
+    let mut meds: Vec<Medicine> = Vec::new();
+    let mut skipped = 0usize;
+    for (i, row) in rows.iter().enumerate() {
+        if i == 0 {
+            continue; // заголовок
+        }
+        if row.len() < 7 {
+            skipped += 1;
+            continue;
+        }
+        let name = row[0].trim();
+        if name.is_empty() {
+            skipped += 1;
+            continue;
+        }
+        // экспортный формат: «01.2028 (до конца мес.)» — отрезаем пометку
+        let date_raw = row[3].trim();
+        let date_clean = date_raw.split(" (").next().unwrap_or(date_raw);
+        let Some((expiry, month_only)) = parse_date_input(date_clean) else {
+            skipped += 1;
+            continue;
+        };
+        let form = row[1].trim().to_string();
+        let note = row[2].trim().to_string();
+        let quantity = row[6].trim().to_string();
+        let price = if row.len() > 7 && !row[7].trim().is_empty() {
+            row[7].trim().replace(',', ".").parse::<f64>().ok()
+        } else {
+            None
+        };
+        let pnote = if row.len() > 10 {
+            row[10].trim().to_string()
+        } else {
+            String::new()
+        };
+        let package = Package {
+            id: 0,
+            expiry,
+            month_only,
+            quantity,
+            note: pnote,
+            price,
+            opened: None,
+            open_period_days: None,
+            disposed: None,
+            photo: String::new(),
+        };
+        // подряд идущие строки одного лекарства склеиваются в его упаковки
+        if let Some(last) = meds.last_mut() {
+            if last.name == name && last.form == form {
+                last.packages.push(package);
+                continue;
+            }
+        }
+        meds.push(Medicine {
+            id: 0,
+            name: name.to_string(),
+            form,
+            note,
+            packages: vec![package],
+        });
+    }
+    Ok((meds, skipped))
 }
 
 #[cfg(test)]
@@ -229,6 +362,7 @@ mod tests {
                     opened: None,
                     open_period_days: None,
                     disposed: None,
+                    photo: String::new(),
                 },
                 // «Годен до 01 2028» → 31.01.2028, месяц без дня
                 Package {
@@ -241,6 +375,7 @@ mod tests {
                     opened: None,
                     open_period_days: None,
                     disposed: None,
+                    photo: String::new(),
                 },
             ],
         });
@@ -341,6 +476,36 @@ mod tests {
             vec!["apteka_20220101-000001.json", "apteka_20230101-000001.json"],
             "должны остаться две самые свежие копии"
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn import_csv_parses_export_format() {
+        let dir = temp_dir("import");
+        let src = dir.join("apteka_data.json");
+        save_to(&sample_db(), &src).unwrap();
+        let csv = dir.join("export.csv");
+        export_csv_to(&sample_db(), &csv).unwrap();
+
+        let (meds, skipped) = import_csv(&csv).unwrap();
+        assert_eq!(skipped, 0);
+        assert_eq!(meds.len(), 1);
+        assert_eq!(meds[0].name, "Парацетамол \"Тева\"");
+        assert_eq!(meds[0].packages.len(), 2, "обе упаковки, включая месячную");
+        assert_eq!(meds[0].packages[1].expiry.to_string(), "2028-01-31");
+        assert!(meds[0].packages[1].month_only);
+        assert_eq!(meds[0].packages[0].price, Some(350.0));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn import_csv_tolerates_garbage() {
+        let dir = temp_dir("import-bad");
+        let csv = dir.join("bad.csv");
+        fs::write(&csv, "\u{FEFF}Лекарство;Форма\r\n;;\r\nХлам;без;даты;не дата\r\n").unwrap();
+        let (meds, skipped) = import_csv(&csv).unwrap();
+        assert_eq!(meds.len(), 0);
+        assert!(skipped >= 1);
         fs::remove_dir_all(&dir).ok();
     }
 }

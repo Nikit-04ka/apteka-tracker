@@ -8,6 +8,8 @@ description = "Домашняя аптечка: учёт сроков годно
 [dependencies]
 apteka-core = { path = "../apteka-core" }
 slint = "1.18"
+arboard = "3"
+rfd = "0.15"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }

@@ -149,6 +149,7 @@ mod tests {
                 month_only: true,
                 quantity: "1 уп.".into(),
                 note: String::new(),
+                photo: String::new(),
                 price: None,
                 opened: None,
                 open_period_days: None,
@@ -161,3 +162,4 @@ mod tests {
         assert_eq!(restored.medicines[0].packages[0].expiry, d("2028-01-31"));
     }
 }
+
