@@ -84,35 +84,64 @@ pub fn list_backups() -> Vec<PathBuf> {
     files
 }
 
-/// Загружает базу; если файла нет — возвращает пустую базу.
-pub fn load() -> Database {
-    load_from(&data_file_path())
+/// Загрузка базы со стороны старта приложения: с полной диагностикой.
+pub fn load() -> LoadOutcome {
+    load_outcome_from(&data_file_path())
 }
 
-/// Загружает базу из конкретного файла. Повреждённый файл не удаляется,
-/// а переименовывается в `*.corrupt-<дата>`, чтобы данные можно было спасти.
-pub fn load_from(path: &Path) -> Database {
-    match fs::read_to_string(path) {
-        Ok(text) => match serde_json::from_str::<Database>(&text) {
-            Ok(db) => db,
-            Err(e) => {
-                eprintln!(
-                    "Не удалось разобрать {}: {e}. Файл сохранён как повреждённый.",
-                    path.display()
-                );
-                backup_corrupt(path);
-                Database::default()
-            }
-        },
-        Err(_) => Database::default(),
+/// Результат загрузки базы с диагностикой.
+pub enum LoadOutcome {
+    /// Успешно загружена
+    Loaded(Database),
+    /// Файла нет — первый запуск
+    Missing,
+    /// Файл повреждён (переименован в *.corrupt-*) — работаем с пустой базой
+    Corrupt { database: Database, backup: PathBuf, msg: String },
+    /// Файл не читается (занят/права) — вызывающий должен завершиться,
+    /// не перезаписывая данные
+    Io(String),
+}
+
+/// Загрузка с полной диагностикой (для старта приложения и тестов).
+pub fn load_outcome_from(path: &Path) -> LoadOutcome {
+    if !path.exists() {
+        return LoadOutcome::Missing;
+    }
+    let text = match fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) => return LoadOutcome::Io(format!("{}: {e}", path.display())),
+    };
+    match serde_json::from_str::<Database>(&text) {
+        Ok(db) => LoadOutcome::Loaded(db),
+        Err(e) => {
+            let stamp = Local::now().format("%Y%m%d-%H%M%S");
+            let backup = PathBuf::from(format!(
+                "{}.corrupt-{stamp}",
+                path.to_string_lossy()
+            ));
+            let msg = format!("{e}");
+            let _ = fs::rename(path, &backup);
+            LoadOutcome::Corrupt { database: Database::default(), backup, msg }
+        }
     }
 }
 
-fn backup_corrupt(path: &Path) {
-    let stamp = Local::now().format("%Y%m%d-%H%M%S");
-    let mut backup = path.as_os_str().to_owned();
-    backup.push(format!(".corrupt-{stamp}"));
-    let _ = fs::rename(path, PathBuf::from(backup));
+/// Загрузка базы из файла (для восстановления из бэкапа) — без побочных эффектов.
+pub fn load_database_from(path: &Path) -> Result<Database, String> {
+    match load_outcome_from(path) {
+        LoadOutcome::Loaded(db) => Ok(db),
+        LoadOutcome::Missing => Err(format!("Файл не найден: {}", path.display())),
+        LoadOutcome::Corrupt { msg, .. } => Err(format!("Повреждённый JSON: {msg}")),
+        LoadOutcome::Io(e) => Err(e),
+    }
+}
+
+/// Загрузка «как раньше» — для тестов и внутренних нужд: пустая база при проблемах.
+pub fn load_from(path: &Path) -> Database {
+    match load_outcome_from(path) {
+        LoadOutcome::Loaded(db) => db,
+        _ => Database::default(),
+    }
 }
 
 /// Сохраняет базу рядом с exe.

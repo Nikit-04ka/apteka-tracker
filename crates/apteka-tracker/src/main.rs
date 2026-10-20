@@ -48,21 +48,33 @@ fn acquire_single_instance() -> InstanceGuard {
     }
 }
 
+/// Модальное сообщение для пользователя (в release консоли нет).
+fn message_box(text: &str) {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            MessageBoxW, MB_ICONWARNING, MB_OK,
+        };
+        unsafe {
+            let text: Vec<u16> = format!("{text}\0").encode_utf16().collect();
+            let title: Vec<u16> = "Домашняя аптечка\0".encode_utf16().collect();
+            MessageBoxW(
+                std::ptr::null_mut(),
+                text.as_ptr(),
+                title.as_ptr(),
+                MB_OK | MB_ICONWARNING,
+            );
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        eprintln!("{text}");
+    }
+}
+
 #[cfg(windows)]
 fn notify_already_running() {
-    use windows_sys::Win32::UI::WindowsAndMessaging::{
-        MessageBoxW, MB_ICONINFORMATION, MB_OK,
-    };
-    unsafe {
-        let text: Vec<u16> = "Домашняя аптечка уже запущена.\0".encode_utf16().collect();
-        let title: Vec<u16> = "Домашняя аптечка\0".encode_utf16().collect();
-        MessageBoxW(
-            std::ptr::null_mut(),
-            text.as_ptr(),
-            title.as_ptr(),
-            MB_OK | MB_ICONINFORMATION,
-        );
-    }
+    message_box("Домашняя аптечка уже запущена.");
 }
 
 #[cfg(not(windows))]
@@ -572,14 +584,32 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     };
 
+    // Загрузка с диагностикой: при нечитаемом файле НЕ перезаписываем данные.
+    let mut startup_warning: Option<String> = None;
+    let db = match storage::load() {
+        storage::LoadOutcome::Loaded(db) => db,
+        storage::LoadOutcome::Missing => Database::default(),
+        storage::LoadOutcome::Corrupt { database, backup, msg } => {
+            startup_warning = Some(format!(
+                "Файл данных был повреждён и переименован в {}. Работаем с пустой базой ({msg}).",
+                backup.display()
+            ));
+            database
+        }
+        storage::LoadOutcome::Io(e) => {
+            message_box(&format!(
+                "Не удалось прочитать файл данных:\n{e}\n\nПрограмма закроется, чтобы не перезаписать ваши данные.\nЕсли файл занят другой программой (Excel, редактор) — закройте её и запустите аптечку снова."
+            ));
+            return Ok(());
+        }
+    };
+
     // Резервная копия текущего состояния — до любых правок этого запуска.
     let backup_note = match storage::backup() {
         Ok(Some(path)) => format!(" · Бэкап: {}", path.display()),
         Ok(None) => String::new(),
         Err(e) => format!(" · Бэкап не удался: {e}"),
     };
-
-    let db = storage::load();
     if !storage::data_file_path().exists() {
         // При первом запуске сразу создаём файл данных рядом с exe
         storage::save(&db).ok();
@@ -591,11 +621,17 @@ fn main() -> Result<(), slint::PlatformError> {
     ui.set_form_options(ModelRc::from(Rc::new(VecModel::from(forms))));
 
     ui.set_warn_days(db.warn_days);
-    ui.set_status_message(SharedString::from(format!(
-        "Данные: {}{}",
-        storage::data_file_path().display(),
-        backup_note
-    )));
+    let startup_msg = match &startup_warning {
+        Some(w) => format!(
+            "ВНИМАНИЕ: {w} · Данные: {}{backup_note}",
+            storage::data_file_path().display()
+        ),
+        None => format!(
+            "Данные: {}{backup_note}",
+            storage::data_file_path().display()
+        ),
+    };
+    ui.set_status_message(SharedString::from(startup_msg));
 
     let state = Rc::new(RefCell::new(State {
         db,
@@ -1515,8 +1551,10 @@ fn main() -> Result<(), slint::PlatformError> {
         let s = state.clone();
         ui.on_pick_photo(move || {
             let ui = h.unwrap();
-            let mut st = s.borrow_mut();
-            let pid = st.pkg_edit_id;
+            // ВАЖНО: не держим заём состояния во время модального диалога rfd —
+            // диалог прокачивает message loop, и сработавший таймер мог бы
+            // захватить borrow() поверх borrow_mut() (паника BorrowMutError).
+            let pid = s.borrow().pkg_edit_id;
             if pid < 0 {
                 return;
             }
@@ -1533,16 +1571,29 @@ fn main() -> Result<(), slint::PlatformError> {
                 .map(|e| e.to_lowercase())
                 .unwrap_or_else(|| "png".into());
             let dir = storage::exe_dir().join("photos");
-            let _ = std::fs::create_dir_all(&dir);
+            if let Err(e) = std::fs::create_dir_all(&dir) {
+                ui.set_status_message(SharedString::from(format!(
+                    "Не удалось создать папку photos: {e}"
+                )));
+                return;
+            }
             let fname = format!("pkg_{pid}.{ext}");
-            if std::fs::copy(&file, dir.join(&fname)).is_ok() {
-                if let Some(m) = st.selected_mut() {
-                    if let Some(p) = m.packages.iter_mut().find(|p| p.id == pid) {
-                        p.photo = fname;
+            match std::fs::copy(&file, dir.join(&fname)) {
+                Ok(_) => {
+                    let mut st = s.borrow_mut();
+                    if let Some(m) = st.selected_mut() {
+                        if let Some(p) = m.packages.iter_mut().find(|p| p.id == pid) {
+                            p.photo = fname;
+                        }
                     }
+                    rebuild_packages(&ui, &st);
+                    ui.set_status_message(SharedString::from("Фото упаковки обновлено"));
                 }
-                rebuild_packages(&ui, &st);
-                ui.set_status_message(SharedString::from("Фото упаковки обновлено"));
+                Err(e) => {
+                    ui.set_status_message(SharedString::from(format!(
+                        "Не удалось скопировать фото: {e}"
+                    )));
+                }
             }
         });
     }
