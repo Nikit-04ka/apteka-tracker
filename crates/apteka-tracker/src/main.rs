@@ -1490,6 +1490,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     &format!("упаковок: {}", m.packages.len()),
                 );
             }
+            let imported_count = meds.len();
             st.db.medicines.append(&mut meds);
             commit_history(&ui, &mut st, prev);
             st.selected_id = -1;
@@ -1497,8 +1498,7 @@ fn main() -> Result<(), slint::PlatformError> {
             refresh_all(&ui, &mut st, true);
             persist(&ui, &st);
             j.set_note(SharedString::from(format!(
-                "Импортировано лекарств: {} (упаковок: {total_pkgs}, пропущено строк: {skipped})",
-                meds.len()
+                "Импортировано лекарств: {imported_count} (упаковок: {total_pkgs}, пропущено строк: {skipped})",
             )));
         });
     }
