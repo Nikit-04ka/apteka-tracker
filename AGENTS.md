@@ -12,11 +12,14 @@ Windows-приложение на Rust (GUI на Slint) для учёта лек
 - Хранение: JSON рядом с exe (`apteka_data.json`), атомарная запись через `.tmp` + rename
 
 ## Project Structure
+
+Cargo workspace (repo root = workspace root): ядро отделено от UI.
+
 ```
-ui/app.slint      — всё UI: master-detail, статусы, форма упаковок
-src/main.rs       — точка входа, состояние State, все колбэки UI
-src/model.rs      — доменная модель (Medicine, Package, Database), статусы, даты
-src/storage.rs    — загрузка/сохранение JSON, экспорт CSV
+Cargo.toml                      # workspace
+crates/apteka-core/src/         # lib: model.rs, storage.rs, history.rs
+crates/apteka-tracker/          # bin: build.rs, ui/app.slint, assets/, src/main.rs
+docs/screenshot.png
 ```
 
 ## Conventions
@@ -52,3 +55,8 @@ src/storage.rs    — загрузка/сохранение JSON, экспорт
 - «Клонировать упаковку» (`pkg-clone`): форма новой упаковки предзаполняется
   количеством/комментарием клона и сроком «сегодня + 1 год»; сохранение —
   через обычный `pkg-save`.
+- Undo/redo: `apteka_core::history::History` — полные снимки `Database`
+  (данные — килобайты), стек 50 шагов. Любой мутационный колбэк обязан
+  снять `prev = st.db.clone()` ДО мутации и вызвать `commit_history(...)`.
+  Последовательные правки одного поля склеиваются (`EditKind` + `last_commit_kind`).
+  Хоткеи Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z, кнопки в статусной строке.

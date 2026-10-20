@@ -32,8 +32,12 @@
 | `↑` / `↓` | перемещение по списку лекарств |
 | `Ctrl+N` | новое лекарство |
 | `Ctrl+F` | перейти к поиску |
+| `Ctrl+Z` | отменить последнее действие |
+| `Ctrl+Y` (или `Ctrl+Shift+Z`) | вернуть отменённое |
 | `Delete` | удалить выбранное лекарство (в два шага: «Точно удалить?») |
 | `Esc` | отмена: сброс подтверждения удаления / редактирования упаковки |
+
+Кнопки «Отменить» / «Вернуть» — в статусной строке внизу окна.
 
 ## Надёжность
 
@@ -44,6 +48,8 @@
   освобождается автоматически, в том числе после сбоя).
 - **Пересчёт статусов**: раз в час подсветка обновляется по текущей дате,
   даже если приложение открыто через полночь.
+- **Отмена/повтор**: до 50 шагов истории на сессию; правки одного поля
+  (например, набор названия по буквам) склеиваются в один шаг.
 
 ## Сборка
 
@@ -78,26 +84,32 @@ cargo build --release
 
 ## Иконка
 
-Иконка приложения генерируется скриптом `assets/make_icon.py` (нужен Python с Pillow:
-`pip install pillow`): `python assets/make_icon.py` → `assets/icon.png` (иконка окна)
+Иконка приложения генерируется скриптом
+`crates/apteka-tracker/assets/make_icon.py` (нужен Python с Pillow:
+`pip install pillow`). Запуск из папки `crates/apteka-tracker`:
+`python assets/make_icon.py` → `assets/icon.png` (иконка окна)
 и `assets/icon.ico` (встраивается в exe при сборке через `winresource`).
 
 ## Структура проекта
 
+Cargo workspace: ядро (`apteka-core`) отделено от интерфейса (`apteka-tracker`).
+
 ```
-apteka-tracker/
-├── Cargo.toml          # зависимости: slint, serde, serde_json, chrono
-├── build.rs            # компиляция ui/app.slint + иконка в ресурсы exe
-├── assets/
-│   ├── make_icon.py    # генерация иконки (Pillow)
-│   ├── icon.png        # иконка окна
-│   └── icon.ico        # иконка exe
-├── ui/
-│   └── app.slint       # интерфейс (декларативный язык Slint)
-└── src/
-    ├── main.rs         # точка входа, связка UI и модели
-    ├── model.rs        # доменная модель, статусы, парсинг дат + тесты
-    └── storage.rs      # JSON (атомарная запись), CSV-экспорт + тесты
+apteka-tracker/                 # корень = workspace
+├── Cargo.toml                  # workspace: members = crates/*
+├── crates/
+│   ├── apteka-core/            # ядро без UI: переиспользуемо, полно тестируемо
+│   │   └── src/
+│   │       ├── lib.rs          # модули + реэкспорт chrono
+│   │       ├── model.rs        # доменная модель, статусы, даты + тесты
+│   │       ├── storage.rs      # JSON, бэкапы, CSV + тесты
+│   │       └── history.rs      # undo/redo на снимках + тесты
+│   └── apteka-tracker/         # приложение (exe)
+│       ├── build.rs            # slint-build + иконка в ресурсы exe
+│       ├── assets/             # icon.png/ico, make_icon.py
+│       ├── ui/app.slint        # интерфейс (Slint)
+│       └── src/main.rs         # точка входа, State, связка колбэков
+└── docs/screenshot.png
 ```
 
 ## Тесты
