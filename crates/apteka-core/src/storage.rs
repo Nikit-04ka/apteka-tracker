@@ -238,7 +238,12 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
 }
 
 fn esc(s: &str) -> String {
-    format!("\"{}\"", s.replace('"', "\"\""))
+    let mut v = s.replace('"', "\"\"");
+    // защита от CSV formula injection: Excel исполняет ячейки, начинающиеся с = + - @
+    if v.starts_with(['=', '+', '-', '@']) {
+        v.insert(0, '\'');
+    }
+    format!("\"{}\"", v)
 }
 
 /// Разбор CSV-текста (наш экспорт: разделитель «;», кавычки с удвоением).
@@ -412,10 +417,34 @@ mod tests {
     }
 
     #[test]
+    fn load_outcome_reports_each_failure_kind() {
+        let dir = temp_dir("outcome");
+        // Missing: файла нет
+        assert!(matches!(
+            load_outcome_from(&dir.join("nope.json")),
+            LoadOutcome::Missing
+        ));
+        // Io: путь указывает на каталог
+        assert!(matches!(load_outcome_from(&dir), LoadOutcome::Io(_)));
+        // Corrupt: мусор переименовывается в *.corrupt-*
+        let bad = dir.join("bad.json");
+        fs::write(&bad, "{битый json").unwrap();
+        match load_outcome_from(&bad) {
+            LoadOutcome::Corrupt { backup, .. } => {
+                assert!(backup.exists(), "повреждённый файл сохранён для спасения");
+                assert!(!bad.exists());
+            }
+            _ => panic!("ожидали Corrupt"),
+        }
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn roundtrip_saves_and_loads() {
         let dir = temp_dir("roundtrip");
         let path = dir.join("data.json");
-        let db = sample_db();
+        let mut db = sample_db();
+        db.journal_push("тест события", "лек", "уп");
         save_to(&db, &path).unwrap();
         let loaded = load_from(&path);
         assert_eq!(loaded.warn_days, 45);
@@ -425,6 +454,8 @@ mod tests {
         let mp = &loaded.medicines[0].packages[1];
         assert!(mp.month_only, "флаг month_only должен пережить сохранение");
         assert_eq!(mp.expiry.to_string(), "2028-01-31");
+        assert_eq!(loaded.events.len(), 1, "журнал переживает round-trip");
+        assert_eq!(loaded.events[0].kind, "тест события");
         fs::remove_dir_all(&dir).ok();
     }
 

@@ -992,6 +992,10 @@ fn main() -> Result<(), slint::PlatformError> {
                     )
                 });
             if let Some((expiry, quantity, note, price, period)) = found {
+                // выбранное фото из незавершённого создания не должно «переехать»
+                // на редактируемую упаковку
+                st.pending_photo = None;
+                ui.set_pending_photo(false);
                 ui.set_pkg_expiry(SharedString::from(fmt_date(expiry)));
                 ui.set_pkg_quantity(SharedString::from(quantity));
                 ui.set_pkg_note(SharedString::from(note));
@@ -1523,8 +1527,15 @@ fn main() -> Result<(), slint::PlatformError> {
             let ui = h.unwrap();
             let j = jh.unwrap();
             let Some(path) = files.borrow().get(idx as usize).cloned() else { return };
-            // страховка: текущее состояние — в бэкап, и его же можно вернуть Ctrl+Z
-            let _ = storage::backup();
+            // страховка: текущее состояние — в бэкап, и его же можно вернуть Ctrl+Z.
+            // Если страховочный бэкап создать не удалось — восстановление отменяем:
+            // иначе сбой диска приведёт к безвозвратной потере текущих данных.
+            if let Err(e) = storage::backup() {
+                j.set_note(SharedString::from(format!(
+                    "Не удалось сохранить бэкап текущих данных ({e}) — восстановление отменено."
+                )));
+                return;
+            }
             let db = match storage::load_database_from(&path) {
                 Ok(db) => db,
                 Err(e) => {
