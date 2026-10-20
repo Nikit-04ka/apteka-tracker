@@ -94,6 +94,8 @@ struct State {
     pkg_edit_id: i32,
     /// вид последней склеенной правки для истории (None — после структурных мутаций)
     last_commit_kind: Option<EditKind>,
+    /// фото, выбранное для ещё не сохранённой упаковки
+    pending_photo: Option<std::path::PathBuf>,
     /// календарь: отображаемый месяц
     cal_year: i32,
     cal_month: u32,
@@ -315,6 +317,18 @@ fn rebuild_packages(ui: &AppWindow, st: &State) {
         format!("Упаковки ({})", rows.len())
     };
     ui.set_packages_header(SharedString::from(header));
+
+    // Пустой список: разный текст в зависимости от причины
+    let total = m.packages.len();
+    let empty_text = if total == 0 {
+        "Упаковок пока нет. Заполните форму ниже и нажмите «Добавить упаковку».".to_string()
+    } else {
+        format!(
+            "Все упаковки списаны ({}). Нажмите «Показать списанные», чтобы увидеть их, или добавьте новую — форма ниже.",
+            total
+        )
+    };
+    ui.set_packages_empty_text(SharedString::from(empty_text));
     ui.set_packages(ModelRc::from(Rc::new(VecModel::from(rows))));
 }
 
@@ -437,6 +451,8 @@ fn update_row(ui: &AppWindow, id: i32, st: &State) {
 
 fn reset_pkg_form(ui: &AppWindow, st: &mut State) {
     st.pkg_edit_id = -1;
+    st.pending_photo = None;
+    ui.set_pending_photo(false);
     ui.set_pkg_editing(false);
     ui.set_pkg_expiry(SharedString::new());
     ui.set_pkg_quantity(SharedString::new());
@@ -591,7 +607,7 @@ fn main() -> Result<(), slint::PlatformError> {
         storage::LoadOutcome::Missing => Database::default(),
         storage::LoadOutcome::Corrupt { database, backup, msg } => {
             startup_warning = Some(format!(
-                "Файл данных был повреждён и переименован в {}. Работаем с пустой базой ({msg}).",
+                "Файл данных был повреждён и переименован в {}. Работаем с пустой базой ({msg}).\n\nЕсли раньше делали «Бэкапы» — откройте их кнопкой «Бэкапы» и восстановите последнюю копию.",
                 backup.display()
             ));
             database
@@ -603,6 +619,9 @@ fn main() -> Result<(), slint::PlatformError> {
             return Ok(());
         }
     };
+    if let Some(w) = &startup_warning {
+        message_box(w);
+    }
 
     // Резервная копия текущего состояния — до любых правок этого запуска.
     let backup_note = match storage::backup() {
@@ -642,6 +661,7 @@ fn main() -> Result<(), slint::PlatformError> {
         sort_idx: 0,
         pkg_edit_id: -1,
         last_commit_kind: None,
+        pending_photo: None,
         cal_year: Local::now().year(),
         cal_month: Local::now().month(),
     }));
@@ -748,6 +768,8 @@ fn main() -> Result<(), slint::PlatformError> {
             st.selected_id = id;
             st.search.clear();
             st.filter_idx = 0;
+            st.pending_photo = None;
+            ui.set_pending_photo(false);
             commit_history(&ui, &mut st, prev);
             ui.set_search_text(SharedString::new());
             ui.set_filter_index(0);
@@ -1037,6 +1059,19 @@ fn main() -> Result<(), slint::PlatformError> {
             match edit_id {
                 -1 => {
                     let pid = st.db.new_pkg_id();
+                    // отложенное фото выбранной в режиме создания упаковки
+                    let mut attached_photo = String::new();
+                    if let Some(src) = st.pending_photo.take() {
+                        ui.set_pending_photo(false);
+                        if let Some(ext) = src.extension().and_then(|e| e.to_str()) {
+                            let dir = storage::exe_dir().join("photos");
+                            let _ = std::fs::create_dir_all(&dir);
+                            let fname = format!("pkg_{pid}.{ext}");
+                            if std::fs::copy(&src, dir.join(&fname)).is_ok() {
+                                attached_photo = fname;
+                            }
+                        }
+                    }
                     if let Some(m) = st.db.medicine_mut(sel) {
                         m.packages.push(Package {
                             id: pid,
@@ -1048,7 +1083,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             opened: None,
                             open_period_days,
                             disposed: None,
-                            photo: String::new(),
+                            photo: attached_photo,
                         });
                         journal_note = Some((
                             m.name.clone(),
@@ -1381,6 +1416,10 @@ fn main() -> Result<(), slint::PlatformError> {
         shopping.on_copy_to_clipboard(move || {
             let j = jh.unwrap();
             let model = j.get_lines();
+            if model.row_count() == 0 {
+                j.set_note(SharedString::from("Список пуст — нечего копировать."));
+                return;
+            }
             let text: String = (0..model.row_count())
                 .filter_map(|i| model.row_data(i))
                 .collect::<Vec<_>>()
@@ -1436,7 +1475,15 @@ fn main() -> Result<(), slint::PlatformError> {
             let Some(path) = files.borrow().get(idx as usize).cloned() else { return };
             // страховка: текущее состояние — в бэкап, и его же можно вернуть Ctrl+Z
             let _ = storage::backup();
-            let db = storage::load_from(&path);
+            let db = match storage::load_database_from(&path) {
+                Ok(db) => db,
+                Err(e) => {
+                    j.set_note(SharedString::from(format!(
+                        "Не удалось восстановить: {e}. Текущие данные не тронуты."
+                    )));
+                    return;
+                }
+            };
             let fname = path.file_name().unwrap_or_default().to_string_lossy().to_string();
             let mut st = s.borrow_mut();
             let prev = st.db.clone();
@@ -1554,10 +1601,7 @@ fn main() -> Result<(), slint::PlatformError> {
             // ВАЖНО: не держим заём состояния во время модального диалога rfd —
             // диалог прокачивает message loop, и сработавший таймер мог бы
             // захватить borrow() поверх borrow_mut() (паника BorrowMutError).
-            let pid = s.borrow().pkg_edit_id;
-            if pid < 0 {
-                return;
-            }
+            let editing = { let st = s.borrow(); (st.pkg_edit_id, st.pending_photo.is_some()) };
             let Some(file) = rfd::FileDialog::new()
                 .set_title("Выберите фото упаковки")
                 .add_filter("Изображения", &["png", "jpg", "jpeg"])
@@ -1565,35 +1609,45 @@ fn main() -> Result<(), slint::PlatformError> {
             else {
                 return;
             };
-            let ext = file
-                .extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_lowercase())
-                .unwrap_or_else(|| "png".into());
-            let dir = storage::exe_dir().join("photos");
-            if let Err(e) = std::fs::create_dir_all(&dir) {
-                ui.set_status_message(SharedString::from(format!(
-                    "Не удалось создать папку photos: {e}"
-                )));
-                return;
-            }
-            let fname = format!("pkg_{pid}.{ext}");
-            match std::fs::copy(&file, dir.join(&fname)) {
-                Ok(_) => {
-                    let mut st = s.borrow_mut();
-                    if let Some(m) = st.selected_mut() {
-                        if let Some(p) = m.packages.iter_mut().find(|p| p.id == pid) {
-                            p.photo = fname;
-                        }
-                    }
-                    rebuild_packages(&ui, &st);
-                    ui.set_status_message(SharedString::from("Фото упаковки обновлено"));
-                }
-                Err(e) => {
+
+            if editing.0 >= 0 {
+                // редактируем существующую — копируем сразу
+                let pid = editing.0;
+                let ext = file
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .map(|e| e.to_lowercase())
+                    .unwrap_or_else(|| "png".into());
+                let dir = storage::exe_dir().join("photos");
+                if let Err(e) = std::fs::create_dir_all(&dir) {
                     ui.set_status_message(SharedString::from(format!(
-                        "Не удалось скопировать фото: {e}"
+                        "Не удалось создать папку photos: {e}"
                     )));
+                    return;
                 }
+                let fname = format!("pkg_{pid}.{ext}");
+                match std::fs::copy(&file, dir.join(&fname)) {
+                    Ok(_) => {
+                        let mut st = s.borrow_mut();
+                        if let Some(m) = st.selected_mut() {
+                            if let Some(p) = m.packages.iter_mut().find(|p| p.id == pid) {
+                                p.photo = fname;
+                            }
+                        }
+                        rebuild_packages(&ui, &st);
+                        ui.set_status_message(SharedString::from("Фото упаковки обновлено"));
+                    }
+                    Err(e) => {
+                        ui.set_status_message(SharedString::from(format!(
+                            "Не удалось скопировать фото: {e}"
+                        )));
+                    }
+                }
+            } else {
+                // новая упаковка: прикрепим файл при сохранении
+                let mut st = s.borrow_mut();
+                st.pending_photo = Some(file);
+                ui.set_pending_photo(true);
             }
         });
     }

@@ -391,6 +391,8 @@ export component AppWindow inherits Window {
     in-out property <string> summary-cost: "Стоимость: 0 руб.";
     in-out property <string> pkg-price: "";
     in-out property <string> pkg-period: "";
+    in-out property <string> packages-empty-text: "Упаковок пока нет.";
+    in-out property <bool> pending-photo: false;
 
     // Автодополнение названия
     in-out property <[string]> suggestions;
@@ -640,7 +642,7 @@ export component AppWindow inherits Window {
                     VerticalLayout {
                         spacing: 3px;
                         FieldLabel { text: "Название"; }
-                        LineEdit {
+                        name-edit := LineEdit {
                             text <=> root.detail-name;
                             font-size: 16px;
                             edited(text) => { root.name-edited(text); }
@@ -864,7 +866,7 @@ export component AppWindow inherits Window {
                                 width: parent.width - 48px;
                                 x: 24px;
                                 y: 24px;
-                                text: "Упаковок пока нет. Добавьте первую — форма ниже.";
+                                text: root.packages-empty-text;
                                 wrap: word-wrap;
                                 horizontal-alignment: center;
                                 font-size: 13px;
@@ -886,7 +888,9 @@ export component AppWindow inherits Window {
                             spacing: 8px;
 
                             Text {
-                                text: root.pkg-editing ? "Изменение упаковки" : "Новая упаковка";
+                                text: root.pkg-editing ? "Изменение упаковки"
+                                    : root.pending-photo ? "Новая упаковка · фото прикрепится при сохранении"
+                                    : "Новая упаковка";
                                 font-size: 13px;
                                 font-weight: 700;
                                 color: root.pkg-editing ? Theme.accent : Theme.text;
@@ -1396,6 +1400,21 @@ export component BackupsWindow inherits Window {
                     }
                 }
             }
+
+            if (root.rows.length == 0): Rectangle {
+                width: 100%;
+                height: 100%;
+                Text {
+                    width: parent.width - 32px;
+                    x: 16px;
+                    y: 32px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    text: "Бэкапов пока нет — они создаются автоматически при каждом запуске программы.";
+                    font-size: 13px;
+                    color: Theme.muted;
+                }
+            }
         }
 
         HorizontalLayout {
@@ -1479,6 +1498,21 @@ export component ImportWindow inherits Window {
                             color: root.selected == i ? Theme.accent : Theme.text;
                         }
                     }
+                }
+            }
+
+            if (root.rows.length == 0): Rectangle {
+                width: 100%;
+                height: 100%;
+                Text {
+                    width: parent.width - 32px;
+                    x: 16px;
+                    y: 32px;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    text: "CSV-файлы рядом с программой не найдены. Сделайте экспорт на другом компьютере и скопируйте файл сюда.";
+                    font-size: 13px;
+                    color: Theme.muted;
                 }
             }
         }
