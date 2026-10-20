@@ -8,7 +8,8 @@ use apteka_core::storage;
 
 use apteka_core::chrono::{Datelike, Local, Months, NaiveDate};
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 slint::include_modules!();
@@ -96,6 +97,10 @@ struct State {
     last_commit_kind: Option<EditKind>,
     /// фото, выбранное для ещё не сохранённой упаковки
     pending_photo: Option<std::path::PathBuf>,
+    /// есть несохранённые правки текста (отложенное автосохранение)
+    unsaved: Cell<bool>,
+    /// кэш декодированных фото (имя файла → готовое изображение)
+    photo_cache: RefCell<HashMap<String, slint::Image>>,
     /// календарь: отображаемый месяц
     cal_year: i32,
     cal_month: u32,
@@ -286,8 +291,18 @@ fn rebuild_packages(ui: &AppWindow, st: &State) {
             let photo = if p.photo.is_empty() {
                 slint::Image::default()
             } else {
-                slint::Image::load_from_path(&storage::exe_dir().join("photos").join(&p.photo))
-                    .unwrap_or_default()
+                // кэш: фото с диска читается и декодируется один раз
+                let mut cache = st.photo_cache.borrow_mut();
+                if let Some(img) = cache.get(&p.photo) {
+                    img.clone()
+                } else {
+                    let img = slint::Image::load_from_path(
+                        &storage::exe_dir().join("photos").join(&p.photo),
+                    )
+                    .unwrap_or_default();
+                    cache.insert(p.photo.clone(), img.clone());
+                    img
+                }
             };
             PackageRow {
                 id: p.id,
@@ -545,13 +560,39 @@ fn reset_delete_armed(ui: &AppWindow) {
 /// Сохраняет базу на диск и показывает результат в статусной строке.
 fn persist(ui: &AppWindow, st: &State) {
     match storage::save(&st.db) {
-        Ok(path) => ui.set_status_message(SharedString::from(format!(
-            "Сохранено {} · {}",
-            Local::now().format("%H:%M:%S"),
-            path.display()
-        ))),
+        Ok(path) => {
+            st.unsaved.set(false);
+            ui.set_status_message(SharedString::from(format!(
+                "Сохранено {} · {}",
+                Local::now().format("%H:%M:%S"),
+                path.display()
+            )));
+        }
         Err(e) => ui.set_status_message(SharedString::from(format!("Ошибка сохранения: {e}"))),
     }
+}
+
+/// Отложенное автосохранение для правок «на каждое нажатие клавиши»:
+/// диск трогается один раз через 800 мс после последнего изменения.
+fn schedule_save(
+    ui_h: &slint::Weak<AppWindow>,
+    s: &Rc<RefCell<State>>,
+    timer: &Rc<RefCell<slint::Timer>>,
+) {
+    s.borrow().unsaved.set(true);
+    let ui_h = ui_h.clone();
+    let s = s.clone();
+    timer.borrow_mut().start(
+        slint::TimerMode::SingleShot,
+        std::time::Duration::from_millis(800),
+        move || {
+            if let Some(ui) = ui_h.upgrade() {
+                let st = s.borrow();
+                if st.unsaved.get() {
+                    persist(&ui, &st);
+                }
+            }        },
+    );
 }
 
 /// Снимок состояния до мутации + синхронизация кнопок отмены/повтора.
@@ -661,6 +702,8 @@ fn main() -> Result<(), slint::PlatformError> {
         sort_idx: 0,
         pkg_edit_id: -1,
         last_commit_kind: None,
+        unsaved: Cell::new(false),
+        photo_cache: RefCell::new(HashMap::new()),
         pending_photo: None,
         cal_year: Local::now().year(),
         cal_month: Local::now().month(),
@@ -732,6 +775,10 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         });
     }
+
+    // Отложенное автосохранение правок текста (диск — не на каждую букву)
+    let save_timer: Rc<RefCell<slint::Timer>> =
+        Rc::new(RefCell::new(slint::Timer::default()));
 
     // ----- Колбэки -----
 
@@ -805,6 +852,7 @@ fn main() -> Result<(), slint::PlatformError> {
     {
         let h = ui.as_weak();
         let s = state.clone();
+        let timer = save_timer.clone();
         ui.on_name_edited(move |text| {
             let ui = h.unwrap();
             let mut st = s.borrow_mut();
@@ -837,13 +885,14 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.set_suggestions(ModelRc::from(Rc::new(VecModel::from(sugg))));
             let id = st.selected_id;
             update_row(&ui, id, &st);
-            persist(&ui, &st);
+            schedule_save(&h, &s, &timer);
         });
     }
 
     {
         let h = ui.as_weak();
         let s = state.clone();
+        let timer = save_timer.clone();
         ui.on_note_edited(move |text| {
             let ui = h.unwrap();
             let mut st = s.borrow_mut();
@@ -852,7 +901,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 m.note = text.to_string();
             }
             commit_history_coalesced(&ui, &mut st, prev, EditKind::Note);
-            persist(&ui, &st);
+            schedule_save(&h, &s, &timer);
         });
     }
 
@@ -1068,6 +1117,7 @@ fn main() -> Result<(), slint::PlatformError> {
                             let _ = std::fs::create_dir_all(&dir);
                             let fname = format!("pkg_{pid}.{ext}");
                             if std::fs::copy(&src, dir.join(&fname)).is_ok() {
+                                st.photo_cache.borrow_mut().remove(&fname);
                                 attached_photo = fname;
                             }
                         }
@@ -1628,13 +1678,16 @@ fn main() -> Result<(), slint::PlatformError> {
                 let fname = format!("pkg_{pid}.{ext}");
                 match std::fs::copy(&file, dir.join(&fname)) {
                     Ok(_) => {
-                        let mut st = s.borrow_mut();
-                        if let Some(m) = st.selected_mut() {
-                            if let Some(p) = m.packages.iter_mut().find(|p| p.id == pid) {
-                                p.photo = fname;
+                        {
+                            let mut st = s.borrow_mut();
+                            st.photo_cache.borrow_mut().remove(&fname);
+                            if let Some(m) = st.selected_mut() {
+                                if let Some(p) = m.packages.iter_mut().find(|p| p.id == pid) {
+                                    p.photo = fname;
+                                }
                             }
                         }
-                        rebuild_packages(&ui, &st);
+                        rebuild_packages(&ui, &s.borrow());
                         ui.set_status_message(SharedString::from("Фото упаковки обновлено"));
                     }
                     Err(e) => {
@@ -1680,5 +1733,14 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    ui.run()
+    ui.run()?;
+
+    // Окно закрыто: сбрасываем несохранённые правки текста (окно дебаунса).
+    {
+        let st = state.borrow();
+        if st.unsaved.get() {
+            let _ = storage::save(&st.db);
+        }
+    }
+    Ok(())
 }
