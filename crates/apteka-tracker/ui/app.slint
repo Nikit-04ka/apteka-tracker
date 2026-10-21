@@ -322,6 +322,9 @@ export component AppWindow inherits Window {
     in-out property <string> search-text: "";
     in-out property <int> filter-index: 0;
     in-out property <int> sort-index: 0;
+    // Категория-фильтр: модель заполняется из Rust («Все категории» + теги)
+    in-out property <[string]> tag-options: ["Все категории"];
+    in-out property <int> tag-filter-index: 0;
 
     // ===== Детали лекарства =====
     in-out property <string> detail-name: "";
@@ -362,6 +365,7 @@ export component AppWindow inherits Window {
     callback form-selected(int);
     callback search-edited(string);
     callback filter-selected(int);
+    callback tag-filter-selected(int);
     callback sort-selected(int);
     callback warn-days-changed(int);
     callback pkg-start-edit(int);
@@ -483,7 +487,7 @@ export component AppWindow inherits Window {
             Rectangle { width: 6px; }
             search-input := LineEdit {
                 text <=> root.search-text;
-                placeholder-text: "Поиск по названию, форме, заметкам…";
+                placeholder-text: "Поиск: название, форма, заметки, категория…";
                 horizontal-stretch: 1;
                 vertical-stretch: 0;
                 edited(text) => { root.search-edited(text); }
@@ -493,6 +497,12 @@ export component AppWindow inherits Window {
                 model: ["Все лекарства", "Истекают скоро", "Просроченные"];
                 current-index <=> root.filter-index;
                 selected(value) => { root.filter-selected(root.filter-index); }
+            }
+            ComboBox {
+                width: 165px;
+                model: root.tag-options;
+                current-index <=> root.tag-filter-index;
+                selected(value) => { root.tag-filter-selected(root.tag-filter-index); }
             }
             ComboBox {
                 width: 195px;

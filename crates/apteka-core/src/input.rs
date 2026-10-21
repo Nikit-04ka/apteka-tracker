@@ -118,15 +118,33 @@ impl PackageForm {
     }
 }
 
+/// Все уникальные категории базы (уникальность без регистра, первая форма
+/// написания), отсортированные по алфавиту.
+pub fn all_tags(db: &Database) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for m in &db.medicines {
+        for t in &m.tags {
+            let lower = t.to_lowercase();
+            if !out.iter().any(|e| e.to_lowercase() == lower) {
+                out.push(t.clone());
+            }
+        }
+    }
+    out.sort_by_key(|a| a.to_lowercase());
+    out
+}
+
 /// Отфильтрованный и отсортированный список лекарств для отображения.
 ///
 /// Фильтр: `filter_idx` 0 — все, 1 — только «истекает», 2 — только
-/// просроченные. Поиск — без регистра по названию, форме и заметке.
-/// Сортировка: `sort_idx` 0 — по ближайшему сроку (без упаковок — в конец),
-/// иначе — по названию.
+/// просроченные. Поиск — без регистра по названию, форме, заметке и
+/// категориям. `tag` — категория-фильтр (None — все). Сортировка:
+/// `sort_idx` 0 — по ближайшему сроку (без упаковок — в конец), иначе —
+/// по названию.
 pub fn visible_medicines<'a>(
     db: &'a Database,
     search: &str,
+    tag: Option<&str>,
     filter_idx: usize,
     sort_idx: usize,
     today: NaiveDate,
@@ -139,6 +157,12 @@ pub fn visible_medicines<'a>(
             let hay =
                 format!("{} {} {} {}", m.name, m.form, m.note, m.tags.join(" ")).to_lowercase();
             if !hay.contains(&needle) {
+                continue;
+            }
+        }
+        if let Some(tag) = tag {
+            let tag_l = tag.to_lowercase();
+            if !m.tags.iter().any(|t| t.to_lowercase() == tag_l) {
                 continue;
             }
         }
@@ -401,23 +425,26 @@ mod tests {
         let names = |v: Vec<(&Medicine, MedInfo)>| -> Vec<String> {
             v.into_iter().map(|(m, _)| m.name.clone()).collect()
         };
-        assert_eq!(names(visible_medicines(&db, "", 0, 0, today)).len(), 3);
         assert_eq!(
-            names(visible_medicines(&db, "пара", 0, 0, today)),
+            names(visible_medicines(&db, "", None, 0, 0, today)).len(),
+            3
+        );
+        assert_eq!(
+            names(visible_medicines(&db, "пара", None, 0, 0, today)),
             vec!["Парацетамол".to_string()],
             "поиск по названию без регистра"
         );
         assert_eq!(
-            names(visible_medicines(&db, "ГОЛОВЫ", 0, 0, today)),
+            names(visible_medicines(&db, "ГОЛОВЫ", None, 0, 0, today)),
             vec!["Парацетамол".to_string()],
             "поиск по заметке"
         );
         assert_eq!(
-            names(visible_medicines(&db, "шипуч", 0, 0, today)),
+            names(visible_medicines(&db, "шипуч", None, 0, 0, today)),
             vec!["Аспирин".to_string()],
             "поиск по форме"
         );
-        assert!(visible_medicines(&db, "мазь", 0, 0, today).is_empty());
+        assert!(visible_medicines(&db, "мазь", None, 0, 0, today).is_empty());
     }
 
     #[test]
@@ -428,17 +455,17 @@ mod tests {
             v.into_iter().map(|(m, _)| m.name.clone()).collect()
         };
         assert_eq!(
-            names(visible_medicines(&db, "", 1, 0, today)),
+            names(visible_medicines(&db, "", None, 1, 0, today)),
             vec!["Ибупрофен".to_string()],
             "фильтр «истекает»"
         );
         assert_eq!(
-            names(visible_medicines(&db, "", 2, 0, today)),
+            names(visible_medicines(&db, "", None, 2, 0, today)),
             vec!["Аспирин".to_string()],
             "фильтр «просрочено»"
         );
         assert!(
-            visible_medicines(&db, "пара", 1, 0, today).is_empty(),
+            visible_medicines(&db, "пара", None, 1, 0, today).is_empty(),
             "фильтр + поиск"
         );
     }
@@ -448,11 +475,41 @@ mod tests {
         let today = d("2026-10-20");
         let mut db = vm_db();
         db.medicines[1].tags = vec!["обезболивающее".to_string()];
-        let names: Vec<String> = visible_medicines(&db, "обезбол", 0, 0, today)
+        let names: Vec<String> = visible_medicines(&db, "обезбол", None, 0, 0, today)
             .into_iter()
             .map(|(m, _)| m.name.clone())
             .collect();
         assert_eq!(names, vec!["Ибупрофен".to_string()], "поиск по категории");
+    }
+
+    #[test]
+    fn visible_filter_by_tag() {
+        let today = d("2026-10-20");
+        let mut db = vm_db();
+        db.medicines[0].tags = vec!["Жаропонижающее".to_string()];
+        db.medicines[2].tags = vec!["жаропонижающее".to_string()];
+        assert_eq!(
+            all_tags(&db),
+            vec!["Жаропонижающее"],
+            "уникальность без регистра, сортировка"
+        );
+        let names: Vec<String> = visible_medicines(&db, "", Some("жаропонижающее"), 0, 0, today)
+            .into_iter()
+            .map(|(m, _)| m.name.clone())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["Аспирин", "Парацетамол"],
+            "фильтр по категории без регистра (сорт. по сроку: -5 дн. раньше +100)"
+        );
+        // категория + статусный фильтр вместе
+        let names: Vec<String> = visible_medicines(&db, "", Some("жаропонижающее"), 2, 0, today)
+            .into_iter()
+            .map(|(m, _)| m.name.clone())
+            .collect();
+        assert_eq!(names, vec!["Аспирин"]);
+        // несуществующая категория — пусто
+        assert!(visible_medicines(&db, "", Some("антибиотик"), 0, 0, today).is_empty());
     }
 
     #[test]
@@ -469,12 +526,12 @@ mod tests {
             v.into_iter().map(|(m, _)| m.name.clone()).collect()
         };
         assert_eq!(
-            order(visible_medicines(&db, "", 0, 0, today)),
+            order(visible_medicines(&db, "", None, 0, 0, today)),
             vec!["Бэта", "Альфа", "Вега"],
             "по сроку; без упаковок — в конец"
         );
         assert_eq!(
-            order(visible_medicines(&db, "", 0, 1, today)),
+            order(visible_medicines(&db, "", None, 0, 1, today)),
             vec!["Альфа", "Бэта", "Вега"],
             "по названию"
         );

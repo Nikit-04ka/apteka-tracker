@@ -47,13 +47,20 @@ fn bench(name: &str, n_meds: usize) {
 
     // rebuild_list: полный скан + сортировка
     let t = Instant::now();
-    let rows = visible_medicines(&db, "", 0, 0, today);
-    println!("  visible_medicines (все, сорт. по сроку): {:>8.2?}  ({} строк)", t.elapsed(), rows.len());
+    let rows = visible_medicines(&db, "", None, 0, 0, today);
+    println!(
+        "  visible_medicines (все, сорт. по сроку): {:>8.2?}  ({} строк)",
+        t.elapsed(),
+        rows.len()
+    );
 
     // поиск без совпадений — худший случай скана
     let t = Instant::now();
-    let rows = visible_medicines(&db, "неттакогословавообще", 0, 0, today);
-    println!("  visible_medicines (поиск, 0 совпадений): {:>8.2?}", t.elapsed());
+    let rows = visible_medicines(&db, "неттакогословавообще", None, 0, 0, today);
+    println!(
+        "  visible_medicines (поиск, 0 совпадений): {:>8.2?}",
+        t.elapsed()
+    );
     assert!(rows.is_empty());
 
     // update_summary: medicine_info по всем + сумма цен
@@ -63,14 +70,20 @@ fn bench(name: &str, n_meds: usize) {
         let _ = medicine_info(m, today, warn);
         let _cost: f64 = m.packages.iter().filter_map(|p| p.price).sum();
     }
-    println!("  update_summary (info+цены):              {:>8.2?}", t.elapsed());
+    println!(
+        "  update_summary (info+цены):              {:>8.2?}",
+        t.elapsed()
+    );
 
     // снимок истории: db.clone() на каждую мутацию
     let t = Instant::now();
     for _ in 0..10 {
         let _prev = db.clone();
     }
-    println!("  db.clone() (снимок истории × 10):        {:>8.2?}", t.elapsed());
+    println!(
+        "  db.clone() (снимок истории × 10):        {:>8.2?}",
+        t.elapsed()
+    );
 
     // сохранение на диск (fsync внутри), среднее по 5
     save_to(&db, &path).unwrap();
@@ -78,12 +91,19 @@ fn bench(name: &str, n_meds: usize) {
     for _ in 0..5 {
         save_to(&db, &path).unwrap();
     }
-    println!("  save_to с fsync (среднее):               {:>8.2?}/шт", t.elapsed() / 5);
+    println!(
+        "  save_to с fsync (среднее):               {:>8.2?}/шт",
+        t.elapsed() / 5
+    );
 
     // загрузка
     let t = Instant::now();
     let loaded = load_from(&path);
-    println!("  load_from (парс JSON):                   {:>8.2?}  ({} лекарств)", t.elapsed(), loaded.medicines.len());
+    println!(
+        "  load_from (парс JSON):                   {:>8.2?}  ({} лекарств)",
+        t.elapsed(),
+        loaded.medicines.len()
+    );
 
     let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
     println!("  размер файла: {:.1} КиБ", bytes as f64 / 1024.0);

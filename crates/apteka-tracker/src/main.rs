@@ -4,7 +4,7 @@
 
 use apteka_core::csv;
 use apteka_core::input::{
-    cal_grid, move_selection_index, parse_package_input, visible_medicines, PackageForm,
+    all_tags, cal_grid, move_selection_index, parse_package_input, visible_medicines, PackageForm,
 };
 use apteka_core::model::*;
 use apteka_core::settings::{self, AppSettings};
@@ -136,7 +136,11 @@ fn install_panic_hook() {
             .to_string();
         let entry = panic_log_entry(&stamp, env!("CARGO_PKG_VERSION"), &payload, &place);
         let path = storage::exe_dir().join("apteka_crash.log");
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
             use std::io::Write;
             let _ = writeln!(f, "{entry}поток: {thread}");
         }
@@ -145,20 +149,6 @@ fn install_panic_hook() {
         );
         default_hook(info);
     }));
-}
-
-#[cfg(test)]
-mod tests {
-    use super::panic_log_entry;
-
-    #[test]
-    fn panic_entry_contains_all_parts() {
-        let e =
-            panic_log_entry("2026-10-21 12:00:00", "1.2.0", "index out of bounds", "src/main.rs:10:5");
-        assert!(e.contains("=== 2026-10-21 12:00:00 · v1.2.0 ==="));
-        assert!(e.contains("panic: index out of bounds"));
-        assert!(e.contains("at src/main.rs:10:5"));
-    }
 }
 
 #[cfg(windows)]
@@ -181,6 +171,8 @@ struct UiState {
     search: String,
     filter_idx: usize,
     sort_idx: usize,
+    /// выбранная категория-фильтр (None — все)
+    tag_filter: Option<String>,
     /// id редактируемой упаковки, -1 — режим добавления
     pkg_edit_id: i32,
     /// фото, выбранное для ещё не сохранённой упаковки
@@ -296,12 +288,33 @@ where
     }
 }
 
+/// Обновляет выпадающий список категорий: «Все категории» + теги базы.
+/// Выбранная категория сохраняется, если ещё существует.
+fn refresh_tag_options(ui: &AppWindow, st: &mut UiState) {
+    let mut options = vec!["Все категории".to_string()];
+    options.extend(all_tags(&st.domain.db));
+    let idx = st
+        .tag_filter
+        .as_ref()
+        .and_then(|t| options.iter().position(|o| o == t))
+        .unwrap_or(0);
+    st.tag_filter = (idx > 0).then(|| options[idx].clone());
+    ui.set_tag_options(ModelRc::from(Rc::new(VecModel::from(
+        options
+            .into_iter()
+            .map(SharedString::from)
+            .collect::<Vec<_>>(),
+    ))));
+    ui.set_tag_filter_index(idx as i32);
+}
+
 /// Пересобирает список лекарств с учётом поиска, фильтра и сортировки
 /// (логика — чистая функция ядра `visible_medicines`).
 fn rebuild_list(ui: &AppWindow, st: &UiState) {
     let rows: Vec<MedicineRow> = visible_medicines(
         &st.domain.db,
         &st.search,
+        st.tag_filter.as_deref(),
         st.filter_idx,
         st.sort_idx,
         today(),
@@ -561,6 +574,7 @@ fn cal_rebuild(ui: &AppWindow, st: &UiState) {
 }
 
 fn refresh_all(ui: &AppWindow, st: &mut UiState, reset_form: bool) {
+    refresh_tag_options(ui, st);
     rebuild_list(ui, st);
     update_summary(ui, st);
     update_details(ui, st, reset_form);
@@ -843,6 +857,7 @@ fn main() -> Result<(), slint::PlatformError> {
         search: String::new(),
         filter_idx: 0,
         sort_idx: 0,
+        tag_filter: None,
         pkg_edit_id: -1,
         photo_cache: RefCell::new(HashMap::new()),
         last_backup_date: Cell::new(today()),
@@ -1030,6 +1045,15 @@ fn main() -> Result<(), slint::PlatformError> {
 
     with_state!(ui, state, on_filter_selected, |ui, mut st, idx| {
         st.filter_idx = idx as usize;
+        rebuild_list(&ui, &st);
+    });
+
+    with_state!(ui, state, on_tag_filter_selected, |ui, mut st, idx| {
+        let model = ui.get_tag_options();
+        st.tag_filter = model
+            .row_data(idx as usize)
+            .map(|s| s.to_string())
+            .filter(|s| s != "Все категории");
         rebuild_list(&ui, &st);
     });
 
@@ -1732,4 +1756,22 @@ fn main() -> Result<(), slint::PlatformError> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::panic_log_entry;
+
+    #[test]
+    fn panic_entry_contains_all_parts() {
+        let e = panic_log_entry(
+            "2026-10-21 12:00:00",
+            "1.2.0",
+            "index out of bounds",
+            "src/main.rs:10:5",
+        );
+        assert!(e.contains("=== 2026-10-21 12:00:00 · v1.2.0 ==="));
+        assert!(e.contains("panic: index out of bounds"));
+        assert!(e.contains("at src/main.rs:10:5"));
+    }
 }
