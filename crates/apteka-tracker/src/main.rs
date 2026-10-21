@@ -108,6 +108,59 @@ fn message_box(text: &str) {
     }
 }
 
+/// Формирует запись crash-лога (отдельная функция — для теста).
+fn panic_log_entry(stamp: &str, version: &str, payload: &str, place: &str) -> String {
+    format!("=== {stamp} · v{version} ===\npanic: {payload}\n  at {place}\n\n")
+}
+
+/// Паника: подробности — в `apteka_crash.log` рядом с exe и в сообщение.
+/// В release консоли нет, молчаливый вылет не оставляет следов; лог нужен,
+/// чтобы сбой можно было сообщить и починить.
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let stamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+        let payload = info
+            .payload()
+            .downcast_ref::<&str>()
+            .map(|s| s.to_string())
+            .or_else(|| info.payload().downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "неизвестная паника".to_string());
+        let place = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "место неизвестно".to_string());
+        let thread = std::thread::current()
+            .name()
+            .unwrap_or("<без имени>")
+            .to_string();
+        let entry = panic_log_entry(&stamp, env!("CARGO_PKG_VERSION"), &payload, &place);
+        let path = storage::exe_dir().join("apteka_crash.log");
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+            use std::io::Write;
+            let _ = writeln!(f, "{entry}поток: {thread}");
+        }
+        message_box(
+            "Программа аварийно завершается.\nПодробности записаны в apteka_crash.log рядом с программой — пришлите его вместе с описанием действий, которые к этому привели.",
+        );
+        default_hook(info);
+    }));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::panic_log_entry;
+
+    #[test]
+    fn panic_entry_contains_all_parts() {
+        let e =
+            panic_log_entry("2026-10-21 12:00:00", "1.2.0", "index out of bounds", "src/main.rs:10:5");
+        assert!(e.contains("=== 2026-10-21 12:00:00 · v1.2.0 ==="));
+        assert!(e.contains("panic: index out of bounds"));
+        assert!(e.contains("at src/main.rs:10:5"));
+    }
+}
+
 #[cfg(windows)]
 fn notify_already_running() {
     message_box("Домашняя аптечка уже запущена.");
@@ -709,6 +762,9 @@ fn history_step(ui: &AppWindow, st: &mut UiState, backwards: bool) {
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // Паника: лог + сообщение вместо молчаливого вылета (в release консоли нет).
+    install_panic_hook();
+
     // Один экземпляр: повторный запуск показывает сообщение и завершается.
     let _instance_guard: Option<std::fs::File> = match acquire_single_instance() {
         InstanceGuard::Locked(file) => Some(file),
