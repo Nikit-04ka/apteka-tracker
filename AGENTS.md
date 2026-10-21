@@ -60,6 +60,17 @@ docs/screenshot.png
   снять `prev = st.db.clone()` ДО мутации и вызвать `commit_history(...)`.
   Последовательные правки одного поля склеиваются (`EditKind` + `last_commit_kind`).
   Хоткеи Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z, кнопки в статусной строке.
+- Каркас колбэков — через `with_state!`: макрос захватывает Weak окна и клон
+  `Rc<RefCell<State>>`, делает upgrade и `borrow()`/`borrow_mut()` (по наличию
+  `mut` перед именем состояния) на всё тело. Не применять, где заём нельзя
+  держать всё тело (диалог `rfd` в `on_pick_photo` прокачивает message loop)
+  или колбэку нужен ещё один Weak/окно (`backups.on_restore`,
+  `import_win.on_do_import`). Хвост мутационного колбэка —
+  `commit_refresh_persist(ui, st, prev, reset_form)`; undo/redo — общий
+  `history_step(ui, st, backwards)`.
+- Отложенное автосохранение текста: единственный `save_timer: Rc<slint::Timer>`
+  (SingleShot 800 мс, при старте регистрируется один раз с замыканием persist);
+  колбэки правок делают `st.unsaved.set(true); timer.restart()`.
 - Жизненный цикл упаковки: `Package.opened` (дата вскрытия) +
   `open_period_days` → `effective_expiry()` = min(заводской, вскрытие+период);
   `Package.disposed: Option<DisposedInfo>` — мягкое списание (скрыто из учёта
@@ -68,3 +79,10 @@ docs/screenshot.png
 - Цена `Package.price: Option<f64>` → чип «Стоимость» (только активные упаковки).
 - Журнал: `Database.events` (cap 400, `journal_push`) — только структурные
   события; окно JournalWindow наполняется при каждом открытии (новейшие сверху).
+
+## Backlog рефакторинга (шаги 1-3, по порядку)
+
+1. with_state-хелпер: макрос или `fn persist_state(ui, s)`; убрать копипаст-каркас в 20 колбэках main.rs (borrow/commit/refresh/persist). S. — **выполнен**: `with_state!` + `commit_refresh_persist` + `history_step`, `schedule_save` заменён на `save_timer.restart()`.
+2. Разделить State на DomainState (db, history, unsaved — в apteka-core) и UiState (search, filter, selected, pkg_edit_id, pending_photo, cal_*). Граница — чистые функции. M.
+3. Единая точка «форма ↔ Package»: parse_package_input уже в core; добавить PackageForm-структуру и собрать Package из неё в pkg_save (убрать 8-контактную правку полей). M.
+Шаги 4 (csv.rs) и 5 (Badge/StatusDot централизация) — выполнены.
