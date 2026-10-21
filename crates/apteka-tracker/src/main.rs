@@ -1333,6 +1333,69 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // Журнал событий: отдельное окно, наполняется при каждом открытии.
     let journal = JournalWindow::new()?;
+    // Отчёты: списания и покупки по годам
+    let reports = ReportWindow::new()?;
+    {
+        let jh = reports.as_weak();
+        reports.on_close_clicked(move || {
+            let j = jh.unwrap();
+            let _ = j.hide();
+        });
+    }
+    {
+        let jh = reports.as_weak();
+        with_state!(ui, state, on_open_reports, |_ui, st| {
+            let j = jh.unwrap();
+            let mut lines: Vec<String> = Vec::new();
+            let disposals = disposals_by_year(&st.domain.db);
+            if disposals.is_empty() {
+                lines.push("Списания: пока ни одной упаковки не списано.".to_string());
+            } else {
+                lines.push("Списания по годам:".to_string());
+                for r in &disposals {
+                    lines.push(format!(
+                        "  {} — {} уп. · {:.2} руб.",
+                        r.year, r.count, r.sum
+                    ));
+                }
+                let total_c: usize = disposals.iter().map(|r| r.count).sum();
+                let total_s: f64 = disposals.iter().map(|r| r.sum).sum();
+                lines.push(format!("  Всего: {total_c} уп. · {total_s:.2} руб."));
+            }
+            lines.push(String::new());
+            let purchases = purchases_by_year(&st.domain.db);
+            if purchases.is_empty() {
+                lines.push(
+                    "Покупки: даты не отмечены — заполните поле «Куплена» у упаковки.".to_string(),
+                );
+            } else {
+                lines.push("Покупки по годам:".to_string());
+                for r in &purchases {
+                    lines.push(format!(
+                        "  {} — {} уп. · {:.2} руб.",
+                        r.year, r.count, r.sum
+                    ));
+                }
+                let total_c: usize = purchases.iter().map(|r| r.count).sum();
+                let total_s: f64 = purchases.iter().map(|r| r.sum).sum();
+                lines.push(format!(
+                    "  Всего с датой покупки: {total_c} уп. · {total_s:.2} руб."
+                ));
+            }
+            lines.push(String::new());
+            lines.push(match oldest_active_expiry(&st.domain.db) {
+                Some(d) => format!("Самая старая активная упаковка годна до {}", fmt_date(d)),
+                None => "Активных упаковок нет.".to_string(),
+            });
+            j.set_lines(ModelRc::from(Rc::new(VecModel::from(
+                lines
+                    .into_iter()
+                    .map(SharedString::from)
+                    .collect::<Vec<_>>(),
+            ))));
+            let _ = j.show();
+        });
+    }
     {
         let jh = journal.as_weak();
         journal.on_close_clicked(move || {

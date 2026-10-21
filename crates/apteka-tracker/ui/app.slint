@@ -377,6 +377,7 @@ export component AppWindow inherits Window {
     callback toggle-show-disposed();
     callback open-journal();
     callback open-shopping();
+    callback open-reports();
     callback open-backups();
     callback open-import();
     callback import-csv(int);
@@ -1219,6 +1220,10 @@ export component AppWindow inherits Window {
                 clicked => { root.open-shopping(); }
             }
             GhostButton {
+                label: "Отчёты";
+                clicked => { root.open-reports(); }
+            }
+            GhostButton {
                 label: "Бэкапы";
                 clicked => { root.open-backups(); }
             }
@@ -1249,6 +1254,76 @@ export component AppWindow inherits Window {
                 color: Theme.muted;
             }
         }
+        }
+    }
+}
+
+// ===== Окно отчётов: списания и покупки по годам =====
+export component ReportWindow inherits Window {
+    title: "Отчёты";
+    width: 560px;
+    height: 520px;
+    in-out property <[string]> lines;
+    callback close-clicked();
+
+    background: Palette.color-scheme == ColorScheme.dark ? #1f2937 : #f8fafc;
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+
+        Rectangle {
+            vertical-stretch: 1;
+            border-radius: 8px;
+            background: Theme.panel;
+            border-width: 1px;
+            border-color: Theme.hairline;
+            clip: true;
+
+            VerticalLayout {
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: parent.height;
+                padding: 8px;
+
+                ListView {
+                    vertical-stretch: 1;
+                    for line in root.lines: Rectangle {
+                        height: 26px;
+                        Text {
+                            text: line;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            x: 8px;
+                            width: parent.width - 16px;
+                            color: Theme.text;
+                        }
+                    }
+                }
+            }
+
+            if (root.lines.length == 0): Rectangle {
+                width: 100%;
+                height: 100%;
+                Text {
+                    width: 100%;
+                    y: 40px;
+                    horizontal-alignment: center;
+                    text: "Данных пока нет — отметьте даты покупки и списывайте упаковки кнопкой «Выбросить».";
+                    font-size: 13px;
+                    color: Theme.muted;
+                }
+            }
+        }
+
+        HorizontalLayout {
+            alignment: end;
+            Button {
+                text: "Закрыть";
+                clicked => { root.close-clicked(); }
+            }
         }
     }
 }

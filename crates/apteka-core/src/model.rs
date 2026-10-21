@@ -1,6 +1,6 @@
 //! Доменная модель: лекарства, упаковки, статусы сроков годности.
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 /// Категории лекарственной формы (единый источник для UI и CSV).
@@ -350,6 +350,64 @@ pub fn days_short(status: i32, days: i64) -> String {
     }
 }
 
+/// Годовая сводка: количество упаковок и денежная сумма.
+#[derive(Debug, Clone, PartialEq)]
+pub struct YearSum {
+    pub year: i32,
+    pub count: usize,
+    pub sum: f64,
+}
+
+fn by_year(items: impl Iterator<Item = (i32, f64)>) -> Vec<YearSum> {
+    let mut acc: std::collections::HashMap<i32, (usize, f64)> = std::collections::HashMap::new();
+    for (year, price) in items {
+        let e = acc.entry(year).or_insert((0, 0.0));
+        e.0 += 1;
+        e.1 += price;
+    }
+    let mut out: Vec<YearSum> = acc
+        .into_iter()
+        .map(|(year, (count, sum))| YearSum { year, count, sum })
+        .collect();
+    out.sort_by_key(|r| std::cmp::Reverse(r.year));
+    out
+}
+
+/// Покупки по годам (по `purchase_date`), годы по убыванию.
+/// Упаковки без даты покупки не учитываются.
+pub fn purchases_by_year(db: &Database) -> Vec<YearSum> {
+    by_year(
+        db.medicines
+            .iter()
+            .flat_map(|m| m.packages.iter())
+            .filter_map(|p| p.purchase_date.map(|d| (d.year(), p.price.unwrap_or(0.0)))),
+    )
+}
+
+/// Списания по годам (по дате списания), годы по убыванию.
+pub fn disposals_by_year(db: &Database) -> Vec<YearSum> {
+    by_year(
+        db.medicines
+            .iter()
+            .flat_map(|m| m.packages.iter())
+            .filter_map(|p| {
+                p.disposed
+                    .as_ref()
+                    .map(|d| (d.date.year(), p.price.unwrap_or(0.0)))
+            }),
+    )
+}
+
+/// Самая ранняя дата годности среди активных (не списанных) упаковок.
+pub fn oldest_active_expiry(db: &Database) -> Option<NaiveDate> {
+    db.medicines
+        .iter()
+        .flat_map(|m| m.packages.iter())
+        .filter(|p| !p.is_disposed())
+        .map(|p| p.effective_expiry())
+        .min()
+}
+
 /// Строки «списка покупок»: активные упаковки, которые просрочены
 /// или истекают в пределах порога. Одна строка на упаковку.
 pub fn shopping_list(db: &Database, today: NaiveDate) -> Vec<String> {
@@ -679,6 +737,70 @@ mod tests {
         assert_eq!(db.new_med_id(), 2);
         assert_eq!(db.new_pkg_id(), 1);
         assert_eq!(db.next_med_id, 3);
+    }
+
+    fn priced_pkg(
+        expiry: NaiveDate,
+        price: Option<f64>,
+        purchase: Option<NaiveDate>,
+        disposed: Option<DisposedInfo>,
+    ) -> Package {
+        Package {
+            id: 0,
+            expiry,
+            month_only: false,
+            quantity: String::new(),
+            note: String::new(),
+            price,
+            purchase_date: purchase,
+            opened: None,
+            open_period_days: None,
+            disposed,
+            photo: String::new(),
+        }
+    }
+
+    #[test]
+    fn year_reports_group_and_sort_desc() {
+        let mut db = Database::default();
+        let dd = |y: i32, m: u32, d: u32| NaiveDate::from_ymd_opt(y, m, d).unwrap();
+        let dis2026 = DisposedInfo {
+            date: dd(2026, 3, 1),
+            reason: 1,
+        };
+        let mk = |purchase: Option<NaiveDate>, disposed: Option<DisposedInfo>| Medicine {
+            id: 0,
+            name: String::new(),
+            form: String::new(),
+            note: String::new(),
+            tags: Vec::new(),
+            packages: vec![priced_pkg(dd(2030, 1, 1), Some(250.0), purchase, disposed)],
+        };
+        db.medicines.push(mk(Some(dd(2025, 5, 1)), None));
+        db.medicines
+            .push(mk(Some(dd(2025, 9, 1)), Some(dis2026.clone())));
+        db.medicines.push(mk(Some(dd(2026, 2, 1)), None));
+        db.medicines.push(mk(None, Some(dis2026)));
+
+        let purchases = purchases_by_year(&db);
+        assert_eq!(purchases.len(), 2, "упаковка без даты покупки не считается");
+        assert_eq!(purchases[0].year, 2026);
+        assert_eq!(purchases[0].count, 1);
+        assert_eq!(purchases[0].sum, 250.0);
+        assert_eq!(purchases[1].year, 2025);
+        assert_eq!(purchases[1].count, 2);
+        assert_eq!(purchases[1].sum, 500.0);
+
+        let disposals = disposals_by_year(&db);
+        assert_eq!(disposals.len(), 1);
+        assert_eq!(disposals[0].year, 2026);
+        assert_eq!(
+            disposals[0].count, 2,
+            "списаны обе, включая купленную в 2025"
+        );
+        assert_eq!(disposals[0].sum, 500.0);
+
+        assert_eq!(oldest_active_expiry(&db), Some(dd(2030, 1, 1)));
     }
 
     #[test]
