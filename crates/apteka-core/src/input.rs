@@ -72,8 +72,12 @@ pub fn cal_grid(
 ) -> Option<Vec<Vec<CalCellTuple>>> {
     let first = NaiveDate::from_ymd_opt(year, month, 1)?;
     let week_start = first - chrono::Duration::days(first.weekday().num_days_from_monday() as i64);
-    let mut rows = Vec::with_capacity(6);
-    for w in 0..6u32 {
+    // строк сетки — ровно столько, сколько нужно месяцу (5 или 6)
+    let next_month = first + chrono::Months::new(1);
+    let days_in_month = (next_month - first).num_days() as u32;
+    let rows_count = (first.weekday().num_days_from_monday() as u32 + days_in_month + 6) / 7;
+    let mut rows = Vec::with_capacity(rows_count as usize);
+    for w in 0..rows_count {
         let mut row = Vec::with_capacity(7);
         for d in 0..7u32 {
             let day = week_start + chrono::Duration::days((w * 7 + d) as i64);
@@ -160,8 +164,13 @@ mod tests {
     #[test]
     fn cal_grid_first_cell_is_monday() {
         let grid = cal_grid(2026, 10, d("2026-10-20")).unwrap();
+        // октябрь 2026: четверг-старт, 31 день → 5 недель
+        assert_eq!(grid.len(), 5);
         // 1 октября 2026 — четверг; понедельник перед ним — 28 сентября
         assert_eq!(grid[0][0].0, "28");
         assert!(!grid[0][0].2, "дни соседнего месяца приглушены");
+        // последняя ячейка сетки — 1 ноября, приглушена
+        assert_eq!(grid[4][6].0, "1");
+        assert!(!grid[4][6].2);
     }
 }

@@ -527,7 +527,13 @@ fn persist(ui: &AppWindow, st: &State) {
                 path.display()
             )));
         }
-        Err(e) => ui.set_status_message(SharedString::from(format!("Ошибка сохранения: {e}"))),
+        Err(e) => {
+            st.unsaved.set(true);
+            ui.set_save_error(true);
+            ui.set_status_message(SharedString::from(format!(
+                "ОШИБКА сохранения: {e} — проверьте, что диск и папка доступны для записи"
+            )));
+        }
     }
 }
 
