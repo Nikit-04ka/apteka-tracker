@@ -162,4 +162,3 @@ mod tests {
         assert_eq!(restored.medicines[0].packages[0].expiry, d("2028-01-31"));
     }
 }
-

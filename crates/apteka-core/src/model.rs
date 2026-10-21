@@ -212,7 +212,13 @@ pub fn parse_date_input(s: &str) -> Option<(NaiveDate, bool)> {
     // Только месяц и год: нормализуем разделители -, /, пробел в точку.
     let norm: String = s
         .chars()
-        .map(|c| if matches!(c, '-' | '/' | ' ' | ',') { '.' } else { c })
+        .map(|c| {
+            if matches!(c, '-' | '/' | ' ' | ',') {
+                '.'
+            } else {
+                c
+            }
+        })
         .collect();
     let parts: Vec<&str> = norm.split('.').filter(|p| !p.is_empty()).collect();
     if parts.len() != 2 {
@@ -224,8 +230,12 @@ pub fn parse_date_input(s: &str) -> Option<(NaiveDate, bool)> {
     } else {
         (parts[1], parts[0])
     };
-    let Ok(year) = ys.parse::<i32>() else { return None };
-    let Ok(month) = ms.parse::<u32>() else { return None };
+    let Ok(year) = ys.parse::<i32>() else {
+        return None;
+    };
+    let Ok(month) = ms.parse::<u32>() else {
+        return None;
+    };
     if !(1900..=2200).contains(&year) || !(1..=12).contains(&month) {
         return None;
     }
@@ -234,7 +244,11 @@ pub fn parse_date_input(s: &str) -> Option<(NaiveDate, bool)> {
 
 /// Последний день месяца.
 pub fn end_of_month(year: i32, month: u32) -> NaiveDate {
-    let (ny, nm) = if month == 12 { (year + 1, 1) } else { (year, month + 1) };
+    let (ny, nm) = if month == 12 {
+        (year + 1, 1)
+    } else {
+        (year, month + 1)
+    };
     NaiveDate::from_ymd_opt(ny, nm, 1)
         .and_then(|d| d.pred_opt())
         .expect("end_of_month: некорректный год/месяц")
@@ -316,8 +330,16 @@ pub fn shopping_list(db: &Database, today: NaiveDate) -> Vec<String> {
             rows.push(format!(
                 "{} ({}): {} — {}, годен до {}",
                 m.name,
-                if m.form.is_empty() { "без формы" } else { &m.form },
-                if p.quantity.is_empty() { "упаковка" } else { &p.quantity },
+                if m.form.is_empty() {
+                    "без формы"
+                } else {
+                    &m.form
+                },
+                if p.quantity.is_empty() {
+                    "упаковка"
+                } else {
+                    &p.quantity
+                },
                 when,
                 fmt_date_display(p.effective_expiry(), p.month_only && p.opened.is_none()),
             ));
@@ -380,8 +402,14 @@ mod tests {
 
     #[test]
     fn parses_full_date_formats() {
-        assert_eq!(parse_date_input("2026-12-31"), Some((d("2026-12-31"), false)));
-        assert_eq!(parse_date_input("31.12.2026"), Some((d("2026-12-31"), false)));
+        assert_eq!(
+            parse_date_input("2026-12-31"),
+            Some((d("2026-12-31"), false))
+        );
+        assert_eq!(
+            parse_date_input("31.12.2026"),
+            Some((d("2026-12-31"), false))
+        );
         assert_eq!(parse_date_input("1.1.2028"), Some((d("2028-01-01"), false)));
     }
 
@@ -523,7 +551,10 @@ mod tests {
                 price: None,
                 opened: None,
                 open_period_days: None,
-                disposed: Some(DisposedInfo { date: d("2026-10-01"), reason: REASON_EXPIRED }),
+                disposed: Some(DisposedInfo {
+                    date: d("2026-10-01"),
+                    reason: REASON_EXPIRED,
+                }),
                 photo: String::new(),
             }],
         };
@@ -549,7 +580,10 @@ mod tests {
 
     #[test]
     fn shopping_list_includes_only_problem_packages() {
-        let mut db = Database { warn_days: 60, ..Default::default() };
+        let mut db = Database {
+            warn_days: 60,
+            ..Default::default()
+        };
         let today = d("2026-10-20");
         let mk = |name: &str, expiry: NaiveDate, disposed: Option<DisposedInfo>| Medicine {
             id: 0,
@@ -575,7 +609,10 @@ mod tests {
         db.medicines.push(mk(
             "Списано",
             d("2026-09-01"),
-            Some(DisposedInfo { date: today, reason: REASON_EXPIRED }),
+            Some(DisposedInfo {
+                date: today,
+                reason: REASON_EXPIRED,
+            }),
         ));
         let rows = shopping_list(&db, today);
         assert_eq!(rows.len(), 2, "только просрочка и истекающие");
@@ -593,4 +630,3 @@ mod tests {
         assert_eq!(db.next_med_id, 3);
     }
 }
-

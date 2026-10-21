@@ -93,7 +93,11 @@ pub enum LoadOutcome {
     /// Файла нет — первый запуск
     Missing,
     /// Файл повреждён (переименован в *.corrupt-*) — работаем с пустой базой
-    Corrupt { database: Database, backup: PathBuf, msg: String },
+    Corrupt {
+        database: Database,
+        backup: PathBuf,
+        msg: String,
+    },
     /// Файл не читается (занят/права) — вызывающий должен завершиться,
     /// не перезаписывая данные
     Io(String),
@@ -112,13 +116,14 @@ pub fn load_outcome_from(path: &Path) -> LoadOutcome {
         Ok(db) => LoadOutcome::Loaded(db),
         Err(e) => {
             let stamp = Local::now().format("%Y%m%d-%H%M%S");
-            let backup = PathBuf::from(format!(
-                "{}.corrupt-{stamp}",
-                path.to_string_lossy()
-            ));
+            let backup = PathBuf::from(format!("{}.corrupt-{stamp}", path.to_string_lossy()));
             let msg = format!("{e}");
             let _ = fs::rename(path, &backup);
-            LoadOutcome::Corrupt { database: Database::default(), backup, msg }
+            LoadOutcome::Corrupt {
+                database: Database::default(),
+                backup,
+                msg,
+            }
         }
     }
 }
@@ -184,7 +189,10 @@ mod tests {
     }
 
     fn sample_db() -> Database {
-        let mut db = Database { warn_days: 45, ..Default::default() };
+        let mut db = Database {
+            warn_days: 45,
+            ..Default::default()
+        };
         db.medicines.push(Medicine {
             id: 1,
             name: "Парацетамол \"Тева\"".to_string(),
@@ -281,7 +289,11 @@ mod tests {
         let db = load_from(&path);
         assert!(db.medicines.is_empty());
         let leftovers: Vec<_> = fs::read_dir(&dir).unwrap().collect();
-        assert_eq!(leftovers.len(), 1, "повреждённый файл должен остаться как .corrupt-*");
+        assert_eq!(
+            leftovers.len(),
+            1,
+            "повреждённый файл должен остаться как .corrupt-*"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -292,7 +304,9 @@ mod tests {
         save_to(&sample_db(), &src).unwrap();
         let bdir = dir.join("backups");
         // нет исходника → нет копии
-        assert!(backup_from_to(&dir.join("missing.json"), &bdir, 5).unwrap().is_none());
+        assert!(backup_from_to(&dir.join("missing.json"), &bdir, 5)
+            .unwrap()
+            .is_none());
         // есть исходник → копия создана и читается
         let copied = backup_from_to(&src, &bdir, 5).unwrap();
         assert!(copied.is_some(), "бэкап должен создаться");

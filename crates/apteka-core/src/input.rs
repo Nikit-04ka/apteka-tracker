@@ -18,7 +18,11 @@ const HINT_FORMAT: &str = "Формат: ГГГГ-ММ-ДД, ДД.ММ.ГГГГ 
 /// Разбор и валидация полей формы упаковки.
 /// `Ok` — все поля корректны; `Err(сообщение)` — текст для показа пользователю
 /// (сообщение, начинающееся с «Формат:», считается нейтральной подсказкой, не ошибкой).
-pub fn parse_package_input(expiry: &str, period: &str, price: &str) -> Result<PackageInput, String> {
+pub fn parse_package_input(
+    expiry: &str,
+    period: &str,
+    price: &str,
+) -> Result<PackageInput, String> {
     let expiry_trimmed = expiry.trim();
     if expiry_trimmed.is_empty() {
         return Err(HINT_FORMAT.to_string());
@@ -30,11 +34,7 @@ pub fn parse_package_input(expiry: &str, period: &str, price: &str) -> Result<Pa
         "" => None,
         t => match t.parse::<i32>() {
             Ok(v) if (1..=3650).contains(&v) => Some(v),
-            _ => {
-                return Err(
-                    "Период после вскрытия: целое число дней от 1 до 3650".to_string(),
-                )
-            }
+            _ => return Err("Период после вскрытия: целое число дней от 1 до 3650".to_string()),
         },
     };
     let price = match price.trim() {
@@ -44,7 +44,12 @@ pub fn parse_package_input(expiry: &str, period: &str, price: &str) -> Result<Pa
             _ => return Err("Цена: число, например 350 или 249.99".to_string()),
         },
     };
-    Ok(PackageInput { expiry, month_only, price, open_period_days })
+    Ok(PackageInput {
+        expiry,
+        month_only,
+        price,
+        open_period_days,
+    })
 }
 
 /// Индекс в видимой списке после сдвига `delta` от `current`.
@@ -65,11 +70,7 @@ pub type CalCellTuple = (String, String, bool, bool);
 
 /// Сетка 6×7 (Пн-первый день недели) для месяца; соседние месяцы приглушены,
 /// но кликабельны (ymd заполнен всегда). None — невозможный год/месяц.
-pub fn cal_grid(
-    year: i32,
-    month: u32,
-    today: NaiveDate,
-) -> Option<Vec<Vec<CalCellTuple>>> {
+pub fn cal_grid(year: i32, month: u32, today: NaiveDate) -> Option<Vec<Vec<CalCellTuple>>> {
     let first = NaiveDate::from_ymd_opt(year, month, 1)?;
     let week_start = first - chrono::Duration::days(first.weekday().num_days_from_monday() as i64);
     // строк сетки — ровно столько, сколько нужно месяцу (5 или 6)
@@ -131,7 +132,10 @@ mod tests {
     #[test]
     fn neutral_hint_when_expiry_empty() {
         let err = parse_package_input("", "", "").unwrap_err();
-        assert!(err.starts_with("Формат:"), "пустая дата — подсказка, не ошибка");
+        assert!(
+            err.starts_with("Формат:"),
+            "пустая дата — подсказка, не ошибка"
+        );
     }
 
     #[test]

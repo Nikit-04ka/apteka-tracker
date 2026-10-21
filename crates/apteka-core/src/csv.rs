@@ -1,5 +1,8 @@
 //! Экспорт и импорт CSV: формат программы (разделитель «;», BOM, экранирование кавычек).
-use crate::model::{days_left, dispose_reason_text, fmt_date, fmt_date_display, parse_date_input, status_for, status_text, Database, Medicine, Package, STATUS_DISPOSED};
+use crate::model::{
+    days_left, dispose_reason_text, fmt_date, fmt_date_display, parse_date_input, status_for,
+    status_text, Database, Medicine, Package, STATUS_DISPOSED,
+};
 use crate::storage::{data_file_path, exe_dir};
 use chrono::Local;
 use std::fs;
@@ -80,7 +83,11 @@ pub enum LoadOutcome {
     /// Файла нет — первый запуск
     Missing,
     /// Файл повреждён (переименован в *.corrupt-*) — работаем с пустой базой
-    Corrupt { database: Database, backup: PathBuf, msg: String },
+    Corrupt {
+        database: Database,
+        backup: PathBuf,
+        msg: String,
+    },
     /// Файл не читается (занят/права) — вызывающий должен завершиться,
     /// не перезаписывая данные
     Io(String),
@@ -99,13 +106,14 @@ pub fn load_outcome_from(path: &Path) -> LoadOutcome {
         Ok(db) => LoadOutcome::Loaded(db),
         Err(e) => {
             let stamp = Local::now().format("%Y%m%d-%H%M%S");
-            let backup = PathBuf::from(format!(
-                "{}.corrupt-{stamp}",
-                path.to_string_lossy()
-            ));
+            let backup = PathBuf::from(format!("{}.corrupt-{stamp}", path.to_string_lossy()));
             let msg = format!("{e}");
             let _ = fs::rename(path, &backup);
-            LoadOutcome::Corrupt { database: Database::default(), backup, msg }
+            LoadOutcome::Corrupt {
+                database: Database::default(),
+                backup,
+                msg,
+            }
         }
     }
 }
@@ -342,8 +350,6 @@ pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
     Ok((meds, skipped))
 }
 
-
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,7 +369,10 @@ mod tests {
     }
 
     fn sample_db() -> Database {
-        let mut db = Database { warn_days: 45, ..Default::default() };
+        let mut db = Database {
+            warn_days: 45,
+            ..Default::default()
+        };
         db.medicines.push(Medicine {
             id: 1,
             name: "Парацетамол \"Тева\"".to_string(),
@@ -406,10 +415,16 @@ mod tests {
         export_csv_to(&sample_db(), &path).unwrap();
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.starts_with('\u{FEFF}'), "нужен BOM для Excel");
-        assert!(text.contains("\"Парацетамол \"\"Тева\"\"\""), "кавычки экранируются");
+        assert!(
+            text.contains("\"Парацетамол \"\"Тева\"\"\""),
+            "кавычки экранируются"
+        );
         assert!(text.contains("01.01.2030"));
         assert!(text.contains("350.00"), "цена попадает в CSV");
-        assert!(text.contains("01.2028 (до конца мес.)"), "месячный срок помечается в CSV");
+        assert!(
+            text.contains("01.2028 (до конца мес.)"),
+            "месячный срок помечается в CSV"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -434,7 +449,11 @@ mod tests {
     fn import_csv_tolerates_garbage() {
         let dir = temp_dir("import-bad");
         let csv = dir.join("bad.csv");
-        fs::write(&csv, "\u{FEFF}Лекарство;Форма\r\n;;\r\nХлам;без;даты;не дата\r\n").unwrap();
+        fs::write(
+            &csv,
+            "\u{FEFF}Лекарство;Форма\r\n;;\r\nХлам;без;даты;не дата\r\n",
+        )
+        .unwrap();
         let (meds, skipped) = import_csv(&csv).unwrap();
         assert_eq!(meds.len(), 0);
         assert!(skipped >= 1);
