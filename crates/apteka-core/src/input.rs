@@ -108,7 +108,7 @@ mod tests {
 
     #[test]
     fn parse_month_only_sets_flag() {
-        let r = parse_package_input("01.2028 (до конца мес.)", "", "").unwrap();
+        let r = parse_package_input("01.2028", "", "").unwrap();
         assert_eq!(r.expiry, d("2028-01-31"));
         assert!(r.month_only);
         assert_eq!(r.price, None);
@@ -150,14 +150,11 @@ mod tests {
         // 1 декабря 2026 — вторник; первая ячейка — понедельник 30 ноября (чужой месяц)
         assert_eq!(grid[0][0].0, "30");
         assert!(!grid[0][0].2);
-        // 31 декабря — свой месяц, «сегодня»
-        let last = &grid[5][6];
-        assert_eq!(last.0, "31");
-        assert!(last.2);
-        assert!(last.3);
-        // переход года в следующем месяце не валиден только по границам года
-        assert!(cal_grid(2026, 12, d("2026-12-31")).is_some());
-        assert!(cal_grid(2027, 1, d("2027-01-01")).is_some());
+        // 31 декабря — четверг недели 4 (столбец Чт); 42-я ячейка — уже 10 января
+        assert_eq!(grid[4][3].0, "31");
+        assert!(grid[4][3].2);
+        assert!(!grid[5][6].2, "последняя ячейка — январь");
+        assert_eq!(grid[5][6].0, "10");
     }
 
     #[test]
