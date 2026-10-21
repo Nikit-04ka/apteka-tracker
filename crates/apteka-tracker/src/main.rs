@@ -7,11 +7,14 @@ use apteka_core::input::{
     cal_grid, move_selection_index, parse_package_input, visible_medicines, PackageForm,
 };
 use apteka_core::model::*;
+use apteka_core::settings::{self, AppSettings};
 use apteka_core::state::{initial_selection, DomainState, EditKind};
 use apteka_core::storage;
 
 use apteka_core::chrono::{Datelike, Local, Months, NaiveDate};
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
+// Built-in-перечисления Slint (ColorScheme для экспортированной Palette).
+use slint::private_unstable_api::re_exports::ColorScheme;
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -573,7 +576,48 @@ fn persist(ui: &AppWindow, st: &UiState) {
     }
 }
 
-/// Снимок в историю + синхронизация кнопок отмены/повтора (UI-часть).
+/// Применяет сохранённые настройки к окну: тема, размер, позиция/развернутость.
+fn apply_window_settings(ui: &AppWindow, s: &AppSettings) {
+    if s.dark_theme {
+        ui.set_theme_dark(true);
+        ui.global::<Palette>().set_color_scheme(ColorScheme::Dark);
+    }
+    let win = ui.window();
+    if s.maximized {
+        win.set_maximized(true);
+        return;
+    }
+    if let (Some(w), Some(h)) = (s.win_w, s.win_h) {
+        if w >= 400.0 && h >= 300.0 {
+            win.set_size(slint::WindowSize::Logical(slint::LogicalSize::new(w, h)));
+        }
+    }
+    if let (Some(x), Some(y)) = (s.win_x, s.win_y) {
+        win.set_position(slint::WindowPosition::Logical(slint::LogicalPosition::new(
+            x as f32, y as f32,
+        )));
+    }
+}
+
+/// Снимает текущую геометрию окна в настройки (при выходе). Всё хранится
+/// в логических пикселях — не зависит от масштаба DPI.
+fn collect_window_settings(ui: &AppWindow, s: &mut AppSettings) {
+    let win = ui.window();
+    let sf = win.scale_factor().max(1.0);
+    let size = win.size();
+    s.win_w = Some(size.width as f32 / sf);
+    s.win_h = Some(size.height as f32 / sf);
+    s.maximized = win.is_maximized();
+    if !s.maximized {
+        // у развернутого окна Windows сообщает мусорную позицию — не сохраняем;
+        // API возвращает физические пиксели — приводим к логическим
+        let p = win.position();
+        s.win_x = Some((p.x as f32 / sf).round() as i32);
+        s.win_y = Some((p.y as f32 / sf).round() as i32);
+    }
+}
+
+/// Снимок состояния до мутации + синхронизация кнопок отмены/повтора.
 fn commit_history(ui: &AppWindow, st: &mut UiState, snapshot: Database) {
     st.domain.commit(snapshot);
     sync_history_ui(ui, st);
@@ -665,6 +709,10 @@ fn main() -> Result<(), slint::PlatformError> {
     }
     let ui = AppWindow::new()?;
 
+    // Настройки окна и темы (settings.json рядом с exe).
+    let settings: Rc<RefCell<AppSettings>> = Rc::new(RefCell::new(settings::load_settings()));
+    apply_window_settings(&ui, &settings.borrow());
+
     // Справочник форм для комбобокса
     let forms: Vec<SharedString> = FORMS.iter().map(|s| SharedString::from(*s)).collect();
     ui.set_form_options(ModelRc::from(Rc::new(VecModel::from(forms))));
@@ -734,6 +782,15 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
             },
         );
+    }
+
+    // Переключение темы: состояние уже перевернуто в .slint — сохраняем выбор.
+    {
+        let s_set = settings.clone();
+        with_state!(ui, state, on_theme_dark_changed, |_ui, _st, dark| {
+            s_set.borrow_mut().dark_theme = dark;
+            settings::save_settings(&s_set.borrow());
+        });
     }
 
     // ----- Колбэки -----
@@ -1542,7 +1599,9 @@ fn main() -> Result<(), slint::PlatformError> {
 
     ui.run()?;
 
-    // Окно закрыто: сбрасываем несохранённые правки текста (окно дебаунса).
+    // Окно закрыто: сохраняем геометрию окна и несохранённые правки текста.
+    collect_window_settings(&ui, &mut settings.borrow_mut());
+    settings::save_settings(&settings.borrow());
     {
         let st = state.borrow();
         if st.domain.unsaved.get() {

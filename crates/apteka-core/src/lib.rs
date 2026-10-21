@@ -5,6 +5,7 @@ pub mod csv;
 pub mod history;
 pub mod input;
 pub mod model;
+pub mod settings;
 pub mod state;
 pub mod storage;
 

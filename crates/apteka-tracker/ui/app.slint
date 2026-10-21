@@ -4,6 +4,9 @@
 
 import { Button, ComboBox, LineEdit, ListView, SpinBox, TextEdit, Palette } from "std-widgets.slint";
 
+// Палитра экспортируется в Rust: применение сохранённой темы при старте.
+export { Palette }
+
 // Строка списка лекарств. status: 0 = годен, 1 = истекает, 2 = просрочено, 3 = нет упаковок
 export struct MedicineRow {
     id: int,
@@ -343,6 +346,8 @@ export component AppWindow inherits Window {
     // ===== Статусная строка =====
     in-out property <int> warn-days: 60;
     in-out property <string> status-message: "";
+    // Тема: true — тёмная; переключается кнопкой «Тема», сохраняется в settings.json
+    in-out property <bool> theme-dark: false;
 
     // ===== Колбэки =====
     callback add-medicine();
@@ -381,6 +386,7 @@ export component AppWindow inherits Window {
     callback move-selection(int);
     callback undo-history();
     callback redo-history();
+    callback theme-dark-changed(bool);
 
     // История изменений
     in-out property <bool> can-undo: false;
@@ -1178,9 +1184,9 @@ export component AppWindow inherits Window {
             GhostButton {
                 label: "Тема";
                 clicked => {
-                    Palette.color-scheme = Palette.color-scheme == ColorScheme.dark
-                        ? ColorScheme.light
-                        : ColorScheme.dark;
+                    root.theme-dark = !root.theme-dark;
+                    Palette.color-scheme = root.theme-dark ? ColorScheme.dark : ColorScheme.light;
+                    root.theme-dark-changed(root.theme-dark);
                 }
             }
             Rectangle { horizontal-stretch: 1; }
