@@ -68,6 +68,7 @@ mod tests {
             name: name.to_string(),
             form: String::new(),
             note: String::new(),
+            tags: Vec::new(),
             packages: Vec::new(),
         });
         db
@@ -143,6 +144,7 @@ mod tests {
             name: "Тест".into(),
             form: "Таблетки".into(),
             note: String::new(),
+            tags: Vec::new(),
             packages: vec![crate::model::Package {
                 id: 1,
                 expiry: d("2028-01-31"),

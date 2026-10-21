@@ -327,6 +327,7 @@ export component AppWindow inherits Window {
     in-out property <string> detail-name: "";
     in-out property <int> detail-form-index: 0;
     in-out property <string> detail-note: "";
+    in-out property <string> detail-tags: "";
     in-out property <[string]> form-options;
     in-out property <string> delete-btn-text: "Удалить лекарство";
     in-out property <bool> delete-armed: false;
@@ -357,6 +358,7 @@ export component AppWindow inherits Window {
     callback delete-medicine();
     callback name-edited(string);
     callback note-edited(string);
+    callback tags-edited(string);
     callback form-selected(int);
     callback search-edited(string);
     callback filter-selected(int);
@@ -701,6 +703,16 @@ export component AppWindow inherits Window {
                             vertical-stretch: 0;
                             text <=> root.detail-note;
                             edited(text) => { root.note-edited(text); }
+                        }
+                    }
+
+                    VerticalLayout {
+                        spacing: 3px;
+                        FieldLabel { text: "Категории (через запятую) — попадают в поиск"; }
+                        LineEdit {
+                            text <=> root.detail-tags;
+                            placeholder-text: "напр. жаропонижающее, детское";
+                            edited(text) => { root.tags-edited(text); }
                         }
                     }
 

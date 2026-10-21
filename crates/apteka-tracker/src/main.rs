@@ -404,6 +404,7 @@ fn update_details_readonly(ui: &AppWindow, st: &UiState) {
             ui.set_has_selection(true);
             ui.set_detail_name(SharedString::from(m.name.clone()));
             ui.set_detail_note(SharedString::from(m.note.clone()));
+            ui.set_detail_tags(SharedString::from(m.tags.join(", ")));
             let idx = FORMS
                 .iter()
                 .position(|f| *f == m.form)
@@ -826,6 +827,7 @@ fn main() -> Result<(), slint::PlatformError> {
             name: "Новое лекарство".to_string(),
             form: FORMS[0].to_string(),
             note: String::new(),
+            tags: Vec::new(),
             packages: Vec::new(),
         });
         st.domain
@@ -899,6 +901,17 @@ fn main() -> Result<(), slint::PlatformError> {
             m.note = text.to_string();
         }
         commit_history_coalesced(&ui, &mut st, prev, EditKind::Note);
+        st.domain.unsaved.set(true);
+        timer.restart();
+    });
+
+    let timer = Rc::clone(&save_timer);
+    with_state!(ui, state, on_tags_edited, |ui, mut st, text| {
+        let prev = st.domain.db.clone();
+        if let Some(m) = st.selected_mut() {
+            m.tags = parse_tags(&text);
+        }
+        commit_history_coalesced(&ui, &mut st, prev, EditKind::Tags);
         st.domain.unsaved.set(true);
         timer.restart();
     });

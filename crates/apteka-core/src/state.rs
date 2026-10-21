@@ -18,6 +18,7 @@ pub enum EditKind {
     Note,
     Form,
     WarnDays,
+    Tags,
 }
 
 /// Доменное состояние: база плюс всё, что к ней относится (история отмены,
@@ -114,6 +115,7 @@ mod tests {
             name: format!("лек-{id}"),
             form: "таблетки".to_string(),
             note: String::new(),
+            tags: Vec::new(),
             packages: vec![Package {
                 id,
                 expiry,

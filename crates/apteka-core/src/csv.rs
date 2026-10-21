@@ -1,7 +1,7 @@
 //! Экспорт и импорт CSV: формат программы (разделитель «;», BOM, экранирование кавычек).
 use crate::model::{
-    days_left, dispose_reason_text, fmt_date, fmt_date_display, parse_date_input, status_for,
-    status_text, Database, Medicine, Package, STATUS_DISPOSED,
+    days_left, dispose_reason_text, fmt_date, fmt_date_display, parse_date_input, parse_tags,
+    status_for, status_text, Database, Medicine, Package, STATUS_DISPOSED,
 };
 use crate::storage::{data_file_path, exe_dir};
 use chrono::Local;
@@ -169,14 +169,16 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
     let today = Local::now().date_naive();
     let mut out = String::new();
     out.push('\u{FEFF}');
-    out.push_str("Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество;Цена;Открыта;Списано;Комментарий\r\n");
+    out.push_str("Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество;Цена;Открыта;Списано;Комментарий;Категории\r\n");
     for m in &db.medicines {
+        let tags_cell = esc(&m.tags.join(", "));
         if m.packages.is_empty() {
             out.push_str(&format!(
-                "{};{};{};;;;;;;;\r\n",
+                "{};{};{};;;;;;;;;{}\r\n",
                 esc(&m.name),
                 esc(&m.form),
-                esc(&m.note)
+                esc(&m.note),
+                tags_cell
             ));
             continue;
         }
@@ -208,7 +210,7 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
                 .map(|d| format!("{} {}", dispose_reason_text(d.reason), fmt_date(d.date)))
                 .unwrap_or_default();
             out.push_str(&format!(
-                "{};{};{};{};{};{};{};{};{};{};{}\r\n",
+                "{};{};{};{};{};{};{};{};{};{};{};{}\r\n",
                 esc(&m.name),
                 esc(&m.form),
                 esc(&m.note),
@@ -219,7 +221,8 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
                 price_cell,
                 opened_cell,
                 disposed_cell,
-                esc(&p.note)
+                esc(&p.note),
+                tags_cell
             ));
         }
     }
@@ -320,6 +323,7 @@ pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
         } else {
             String::new()
         };
+        let tags_raw = if row.len() > 11 { row[11].trim() } else { "" };
         let package = Package {
             id: 0,
             expiry,
@@ -344,6 +348,7 @@ pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
             name: name.to_string(),
             form,
             note,
+            tags: parse_tags(tags_raw),
             packages: vec![package],
         });
     }
@@ -378,6 +383,7 @@ mod tests {
             name: "Парацетамол \"Тева\"".to_string(),
             form: "Таблетки".to_string(),
             note: "от головы".to_string(),
+            tags: Vec::new(),
             packages: vec![
                 Package {
                     id: 1,
@@ -442,6 +448,23 @@ mod tests {
         assert_eq!(meds[0].packages[1].expiry.to_string(), "2028-01-31");
         assert!(meds[0].packages[1].month_only);
         assert_eq!(meds[0].packages[0].price, Some(350.0));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn csv_tags_roundtrip() {
+        let dir = temp_dir("tags");
+        let path = dir.join("export.csv");
+        let mut db = sample_db();
+        db.medicines[0].tags = vec!["жаропонижающее".to_string(), "детское".to_string()];
+        export_csv_to(&db, &path).unwrap();
+        let (meds, skipped) = import_csv(&path).unwrap();
+        assert_eq!(skipped, 0);
+        assert_eq!(
+            meds[0].tags,
+            vec!["жаропонижающее".to_string(), "детское".to_string()],
+            "категории переживают экспорт/импорт"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

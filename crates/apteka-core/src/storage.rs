@@ -246,6 +246,7 @@ mod tests {
             name: "Парацетамол \"Тева\"".to_string(),
             form: "Таблетки".to_string(),
             note: "от головы".to_string(),
+            tags: Vec::new(),
             packages: vec![
                 Package {
                     id: 1,

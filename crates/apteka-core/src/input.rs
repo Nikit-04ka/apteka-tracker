@@ -136,7 +136,8 @@ pub fn visible_medicines<'a>(
     let mut rows: Vec<(&Medicine, MedInfo)> = Vec::new();
     for m in &db.medicines {
         if !needle.is_empty() {
-            let hay = format!("{} {} {}", m.name, m.form, m.note).to_lowercase();
+            let hay =
+                format!("{} {} {} {}", m.name, m.form, m.note, m.tags.join(" ")).to_lowercase();
             if !hay.contains(&needle) {
                 continue;
             }
@@ -373,6 +374,7 @@ mod tests {
             name: name.to_string(),
             form: form.to_string(),
             note: note.to_string(),
+            tags: Vec::new(),
             packages,
         }
     }
@@ -439,6 +441,18 @@ mod tests {
             visible_medicines(&db, "пара", 1, 0, today).is_empty(),
             "фильтр + поиск"
         );
+    }
+
+    #[test]
+    fn visible_search_matches_tags() {
+        let today = d("2026-10-20");
+        let mut db = vm_db();
+        db.medicines[1].tags = vec!["обезболивающее".to_string()];
+        let names: Vec<String> = visible_medicines(&db, "обезбол", 0, 0, today)
+            .into_iter()
+            .map(|(m, _)| m.name.clone())
+            .collect();
+        assert_eq!(names, vec!["Ибупрофен".to_string()], "поиск по категории");
     }
 
     #[test]

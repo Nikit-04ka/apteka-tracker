@@ -107,6 +107,9 @@ pub struct Medicine {
     pub form: String,
     #[serde(default)]
     pub note: String,
+    /// Категории/теги (напр. «жаропонижающее») — свободные, без дублей.
+    #[serde(default)]
+    pub tags: Vec<String>,
     #[serde(default)]
     pub packages: Vec<Package>,
 }
@@ -118,6 +121,23 @@ pub struct JournalEvent {
     pub kind: String,
     pub medicine: String,
     pub package: String,
+}
+
+/// Разбор строки категорий: разделители — запятая или точка с запятой,
+/// пустые и повторяющиеся (без регистра) отбрасываются.
+pub fn parse_tags(text: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for part in text.split([',', ';']) {
+        let t = part.trim();
+        if t.is_empty() {
+            continue;
+        }
+        let lower = t.to_lowercase();
+        if !out.iter().any(|e| e.to_lowercase() == lower) {
+            out.push(t.to_string());
+        }
+    }
+    out
 }
 
 /// Всё, что сохраняется на диск (JSON рядом с exe).
@@ -494,6 +514,7 @@ mod tests {
             name: "Парацетамол".to_string(),
             form: "Таблетки".to_string(),
             note: String::new(),
+            tags: Vec::new(),
             packages: vec![
                 pkg(1, d("2030-01-01"), false),
                 pkg(2, d("2026-11-01"), false),
@@ -514,6 +535,7 @@ mod tests {
             name: "Аспирин".to_string(),
             form: "Таблетки".to_string(),
             note: String::new(),
+            tags: Vec::new(),
             packages: vec![pkg(1, end_of_month(2028, 1), true)],
         };
         let info = medicine_info(&m, d("2026-10-20"), 60);
@@ -529,6 +551,7 @@ mod tests {
             name: "Йод".to_string(),
             form: "Прочее".to_string(),
             note: String::new(),
+            tags: Vec::new(),
             packages: vec![],
         };
         let info = medicine_info(&m, d("2026-10-20"), 60);
@@ -562,6 +585,7 @@ mod tests {
             name: "Тест".to_string(),
             form: String::new(),
             note: String::new(),
+            tags: Vec::new(),
             packages: vec![Package {
                 id: 1,
                 expiry: d("2026-09-01"),
@@ -610,6 +634,7 @@ mod tests {
             name: name.to_string(),
             form: "Таблетки".to_string(),
             note: String::new(),
+            tags: Vec::new(),
             packages: vec![Package {
                 id: 0,
                 expiry,
@@ -648,5 +673,20 @@ mod tests {
         assert_eq!(db.new_med_id(), 2);
         assert_eq!(db.new_pkg_id(), 1);
         assert_eq!(db.next_med_id, 3);
+    }
+
+    #[test]
+    fn parse_tags_splits_and_dedups() {
+        assert_eq!(
+            parse_tags(" жаропонижающее ,  детское;"),
+            vec!["жаропонижающее", "детское"]
+        );
+        assert_eq!(
+            parse_tags("а, б; А ,в"),
+            vec!["а", "б", "в"],
+            "дубли без регистра"
+        );
+        assert_eq!(parse_tags(" , ;"), Vec::<String>::new());
+        assert_eq!(parse_tags("одно"), vec!["одно"]);
     }
 }
