@@ -3,7 +3,7 @@ use crate::model::{days_left, dispose_reason_text, fmt_date, fmt_date_display, p
 use crate::storage::{data_file_path, exe_dir};
 use chrono::Local;
 use std::fs;
-use std::io;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 /// Путь к файлу экспорта CSV.
