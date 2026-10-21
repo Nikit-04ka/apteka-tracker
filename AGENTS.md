@@ -102,6 +102,18 @@ docs/screenshot.png
 - Журнал: `Database.events` (cap 400, `journal_push`) — только структурные
   события; окно JournalWindow наполняется при каждом открытии (новейшие сверху).
 
+## Производительность (замеры 2026-10, release, SSD)
+
+Комфортный масштаб — до ~1000 лекарств. Узкие места при росте:
+- `persist()` = полный fsync JSON на каждую мутацию (~7 мс @200, ~38 мс @5000
+  на SSD; на флешке заметно больше). Осознанный trade-off в пользу
+  сохранности; текст правок уже дебаунится (800 мс).
+- Список/упаковки пересобираются целиком (`set_medicines` с новым ModelRc) —
+  скролл прыгает, делегаты пересоздаются. Точечное обновление — паттерн
+  `update_row`.
+- История = 50 полных снимков `Database` в RAM (~30 МБ @1000 лекарств).
+Перф-пробник: `cargo test --release -p apteka-core --test perf_probe -- --nocapture`.
+
 ## Backlog рефакторинга (шаги 1-3, по порядку)
 
 1. with_state-хелпер: макрос или `fn persist_state(ui, s)`; убрать копипаст-каркас в 20 колбэках main.rs (borrow/commit/refresh/persist). S. — **выполнен**: `with_state!` + `commit_refresh_persist` + `history_step`, `schedule_save` заменён на `save_timer.restart()`.
