@@ -405,10 +405,10 @@ export component AppWindow inherits Window {
     // ===== Клавиатура: ↑/↓ — список, Ctrl+N — новое лекарство, Ctrl+F — поиск,
     // Delete — удалить (в два шага), Escape — отмена =====
     keys := FocusScope {
-        width: 100%;
-        height: 100%;
         min-width: 940px;
         min-height: 560px;
+        preferred-width: 1150px;
+        preferred-height: 680px;
 
         key-pressed(event) => {
             if (event.modifiers.control && (event.text == "n" || event.text == "N")) {
@@ -1153,7 +1153,7 @@ export component AppWindow inherits Window {
                 enabled: root.can-redo;
                 clicked => { root.redo-history(); }
             }
-            Rectangle { width: 1px; height: 22px; background: root.hairline; }
+            Rectangle { width: 1px; height: 22px; background: Theme.hairline; }
             GhostButton {
                 label: "Журнал";
                 clicked => { root.open-journal(); }
@@ -1170,7 +1170,7 @@ export component AppWindow inherits Window {
                 label: "Импорт CSV";
                 clicked => { root.open-import(); }
             }
-            Rectangle { width: 1px; height: 22px; background: root.hairline; }
+            Rectangle { width: 1px; height: 22px; background: Theme.hairline; }
             GhostButton {
                 label: "Экспорт CSV";
                 clicked => { root.export-csv(); }
