@@ -3,6 +3,7 @@ name = "apteka-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+rust-version.workspace = true
 description = "Ядро «Домашней аптечки»: модель данных, хранение, история изменений — без UI"
 
 [dependencies]

@@ -3,6 +3,7 @@ name = "apteka-tracker"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
+rust-version.workspace = true
 description = "Домашняя аптечка: учёт сроков годности лекарств (GUI на Slint)"
 
 [dependencies]
