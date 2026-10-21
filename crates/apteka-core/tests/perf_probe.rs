@@ -59,13 +59,11 @@ fn bench(name: &str, n_meds: usize) {
     // update_summary: medicine_info по всем + сумма цен
     let t = Instant::now();
     let warn = db.warn_days as i64;
-    let mut soon = 0;
     for m in &db.medicines {
         let _ = medicine_info(m, today, warn);
         let _cost: f64 = m.packages.iter().filter_map(|p| p.price).sum();
     }
     println!("  update_summary (info+цены):              {:>8.2?}", t.elapsed());
-    let _ = soon;
 
     // снимок истории: db.clone() на каждую мутацию
     let t = Instant::now();

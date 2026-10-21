@@ -211,6 +211,38 @@ fn build_med_row(m: &Medicine, info: &MedInfo) -> MedicineRow {
     }
 }
 
+/// Обновляет модель списка на месте: существующие строки перезаписываются
+/// только при изменении (`set_row_data` — делегаты не пересоздаются, скролл
+/// не прыгает), новые дописываются, лишние усекаются с конца. Если модель
+/// ещё не VecModel (первое заполнение после старта) — ставится новый VecModel.
+fn sync_model<T, G, S>(get: G, set: S, rows: Vec<T>)
+where
+    T: Clone + PartialEq + 'static,
+    G: FnOnce() -> ModelRc<T>,
+    S: FnOnce(ModelRc<T>),
+{
+    let target = rows.len();
+    let model = get();
+    if let Some(vm) = model.as_any().downcast_ref::<VecModel<T>>() {
+        let current = vm.row_count();
+        for (i, row) in rows.into_iter().enumerate() {
+            if i < current {
+                if vm.row_data(i).as_ref() == Some(&row) {
+                    continue;
+                }
+                vm.set_row_data(i, row);
+            } else {
+                vm.push(row);
+            }
+        }
+        for i in (target..current).rev() {
+            vm.remove(i);
+        }
+    } else {
+        set(ModelRc::from(Rc::new(VecModel::from(rows))));
+    }
+}
+
 /// Пересобирает список лекарств с учётом поиска, фильтра и сортировки
 /// (логика — чистая функция ядра `visible_medicines`).
 fn rebuild_list(ui: &AppWindow, st: &UiState) {
@@ -224,7 +256,7 @@ fn rebuild_list(ui: &AppWindow, st: &UiState) {
     .into_iter()
     .map(|(m, info)| build_med_row(m, &info))
     .collect();
-    ui.set_medicines(ModelRc::from(Rc::new(VecModel::from(rows))));
+    sync_model(|| ui.get_medicines(), |model| ui.set_medicines(model), rows);
 
     ui.set_list_empty_text(SharedString::from(
         if st.search.is_empty() && st.filter_idx == 0 {
@@ -282,7 +314,11 @@ fn clear_photo_cache(st: &UiState) {
 /// Пересобирает таблицу упаковок выбранного лекарства (списанные — по флагу).
 fn rebuild_packages(ui: &AppWindow, st: &UiState) {
     let Some(m) = st.selected() else {
-        ui.set_packages(ModelRc::default());
+        sync_model(
+            || ui.get_packages(),
+            |model| ui.set_packages(model),
+            Vec::new(),
+        );
         ui.set_packages_header(SharedString::from("Упаковки"));
         return;
     };
@@ -383,7 +419,7 @@ fn rebuild_packages(ui: &AppWindow, st: &UiState) {
         )
     };
     ui.set_packages_empty_text(SharedString::from(empty_text));
-    ui.set_packages(ModelRc::from(Rc::new(VecModel::from(rows))));
+    sync_model(|| ui.get_packages(), |model| ui.set_packages(model), rows);
 }
 
 /// Заполняет панель деталей; при `reset_form` сбрасывает форму упаковки.
