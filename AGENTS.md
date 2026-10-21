@@ -25,7 +25,7 @@ docs/screenshot.png
 ## Conventions
 - Язык интерфейса и пользовательских строк — русский.
 - Статусы — `i32`-константы: `STATUS_OK=0, STATUS_SOON=1, STATUS_EXPIRED=2, STATUS_EMPTY=3`.
-- Истина — в `State.db` (структура `Database`); UI-свойства Slint — только отображение.
+- Истина — в `UiState.domain.db` (структура `Database`); UI-свойства Slint — только отображение.
 - Сохранение на диск после каждого мутационного колбэка (`persist`).
 - Даты в UI: `ДД.ММ.ГГГГ`; ввод принимает также `ГГГГ-ММ-ДД` и месяц без дня
   (`ММ.ГГГГ`, `ГГГГ-ММ`, `ММ/ГГГГ`, `ММ ГГГГ`) — `model::parse_date_input`.
@@ -55,13 +55,19 @@ docs/screenshot.png
 - «Клонировать упаковку» (`pkg-clone`): форма новой упаковки предзаполняется
   количеством/комментарием клона и сроком «сегодня + 1 год»; сохранение —
   через обычный `pkg-save`.
+- Разделение состояний: `apteka_core::state::DomainState` (db, история отмены,
+  unsaved; мутации только методами `commit`/`commit_coalesced`/`step_history`)
+  + `UiState` в main.rs (selected_id, search, filter/sort, pkg_edit_id,
+  pending_photo, photo_cache, cal_*). Граница — чистые функции ядра
+  (`medicine_info`, `initial_selection`, `shopping_list`, `parse_date_input`);
+  ядро не знает про Slint.
 - Undo/redo: `apteka_core::history::History` — полные снимки `Database`
   (данные — килобайты), стек 50 шагов. Любой мутационный колбэк обязан
-  снять `prev = st.db.clone()` ДО мутации и вызвать `commit_history(...)`.
-  Последовательные правки одного поля склеиваются (`EditKind` + `last_commit_kind`).
-  Хоткеи Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z, кнопки в статусной строке.
+  снять `prev = st.domain.db.clone()` ДО мутации и вызвать `commit_history(...)`
+  (для правок одного поля — `commit_history_coalesced(...)`, склейка в
+  `DomainState`). Хоткеи Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z, кнопки в статусной строке.
 - Каркас колбэков — через `with_state!`: макрос захватывает Weak окна и клон
-  `Rc<RefCell<State>>`, делает upgrade и `borrow()`/`borrow_mut()` (по наличию
+  `Rc<RefCell<UiState>>`, делает upgrade и `borrow()`/`borrow_mut()` (по наличию
   `mut` перед именем состояния) на всё тело. Не применять, где заём нельзя
   держать всё тело (диалог `rfd` в `on_pick_photo` прокачивает message loop)
   или колбэку нужен ещё один Weak/окно (`backups.on_restore`,
@@ -83,6 +89,6 @@ docs/screenshot.png
 ## Backlog рефакторинга (шаги 1-3, по порядку)
 
 1. with_state-хелпер: макрос или `fn persist_state(ui, s)`; убрать копипаст-каркас в 20 колбэках main.rs (borrow/commit/refresh/persist). S. — **выполнен**: `with_state!` + `commit_refresh_persist` + `history_step`, `schedule_save` заменён на `save_timer.restart()`.
-2. Разделить State на DomainState (db, history, unsaved — в apteka-core) и UiState (search, filter, selected, pkg_edit_id, pending_photo, cal_*). Граница — чистые функции. M.
+2. Разделить State на DomainState (db, history, unsaved — в apteka-core) и UiState (search, filter, selected, pkg_edit_id, pending_photo, cal_*). Граница — чистые функции. M. — **выполнен**: `apteka_core::state::{DomainState, EditKind, initial_selection}` + `UiState` (содержит `domain`); логика истории (склейка, шаг) переехала в ядро с тестами.
 3. Единая точка «форма ↔ Package»: parse_package_input уже в core; добавить PackageForm-структуру и собрать Package из неё в pkg_save (убрать 8-контактную правку полей). M.
 Шаги 4 (csv.rs) и 5 (Badge/StatusDot централизация) — выполнены.

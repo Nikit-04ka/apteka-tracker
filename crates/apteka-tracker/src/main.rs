@@ -3,14 +3,14 @@
 //! Точка входа: загрузка данных, сборка окна Slint, связка колбэков.
 
 use apteka_core::csv;
-use apteka_core::history::History;
 use apteka_core::input::{cal_grid, move_selection_index, parse_package_input};
 use apteka_core::model::*;
+use apteka_core::state::{initial_selection, DomainState, EditKind};
 use apteka_core::storage;
 
 use apteka_core::chrono::{Datelike, Local, Months, NaiveDate};
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -22,7 +22,7 @@ fn today() -> NaiveDate {
 }
 
 /// Разворачивает стандартный каркас Slint-колбэка: захват `Weak` окна и клона
-/// `Rc<RefCell<State>>`, upgrade внутри замыкания и заём состояния на всё тело.
+/// `Rc<RefCell<UiState>>`, upgrade внутри замыкания и заём состояния на всё тело.
 ///
 /// - `with_state!(ui, state, on_cb, |ui, st| { ... })` — только чтение (`borrow`).
 /// - `with_state!(ui, state, on_cb, |ui, mut st| { ... })` — мутация (`borrow_mut`).
@@ -113,22 +113,20 @@ fn notify_already_running() {
     eprintln!("Домашняя аптечка уже запущена.");
 }
 
-/// Изменяемое состояние приложения. UI-свойства — только отображение.
-struct State {
-    db: Database,
-    history: History,
+/// Состояние окна: доменная часть (база+история, живёт в ядре) плюс
+/// собственно UI-состояние. Истина — в `domain.db`; UI-свойства Slint —
+/// только отображение.
+struct UiState {
+    /// домен: база, история отмены, флаг несохранённого (apteka-core)
+    domain: DomainState,
     selected_id: i32,
     search: String,
     filter_idx: usize,
     sort_idx: usize,
     /// id редактируемой упаковки, -1 — режим добавления
     pkg_edit_id: i32,
-    /// вид последней склеенной правки для истории (None — после структурных мутаций)
-    last_commit_kind: Option<EditKind>,
     /// фото, выбранное для ещё не сохранённой упаковки
     pending_photo: Option<std::path::PathBuf>,
-    /// есть несохранённые правки текста (отложенное автосохранение)
-    unsaved: Cell<bool>,
     /// кэш декодированных фото (имя файла → готовое изображение)
     photo_cache: RefCell<HashMap<String, slint::Image>>,
     /// календарь: отображаемый месяц
@@ -151,15 +149,15 @@ const MONTHS_RU: [&str; 12] = [
     "Декабрь",
 ];
 
-impl State {
+impl UiState {
     fn selected(&self) -> Option<&Medicine> {
         let id = self.selected_id;
-        self.db.medicine(id)
+        self.domain.db.medicine(id)
     }
 
     fn selected_mut(&mut self) -> Option<&mut Medicine> {
         let id = self.selected_id;
-        self.db.medicine_mut(id)
+        self.domain.db.medicine_mut(id)
     }
 }
 
@@ -207,13 +205,13 @@ fn build_med_row(m: &Medicine, info: &MedInfo) -> MedicineRow {
 }
 
 /// Пересобирает список лекарств с учётом поиска, фильтра и сортировки.
-fn rebuild_list(ui: &AppWindow, st: &State) {
+fn rebuild_list(ui: &AppWindow, st: &UiState) {
     let t = today();
-    let warn = st.db.warn_days as i64;
+    let warn = st.domain.db.warn_days as i64;
     let needle = st.search.to_lowercase();
 
     let mut rows: Vec<(i64, String, MedicineRow)> = Vec::new();
-    for m in &st.db.medicines {
+    for m in &st.domain.db.medicines {
         if !needle.is_empty() {
             let hay = format!("{} {} {}", m.name, m.form, m.note).to_lowercase();
             if !hay.contains(&needle) {
@@ -252,13 +250,13 @@ fn rebuild_list(ui: &AppWindow, st: &State) {
 }
 
 /// Обновляет сводку по всем лекарствам (без учёта фильтров).
-fn update_summary(ui: &AppWindow, st: &State) {
+fn update_summary(ui: &AppWindow, st: &UiState) {
     let t = today();
-    let warn = st.db.warn_days as i64;
+    let warn = st.domain.db.warn_days as i64;
     let mut soon = 0usize;
     let mut expired = 0usize;
     let mut packages = 0usize;
-    for m in &st.db.medicines {
+    for m in &st.domain.db.medicines {
         packages += m.packages.len();
         match medicine_info(m, t, warn).status {
             STATUS_SOON => soon += 1,
@@ -268,16 +266,17 @@ fn update_summary(ui: &AppWindow, st: &State) {
     }
     ui.set_summary_total(SharedString::from(format!(
         "Лекарств: {} · Упаковок: {}",
-        st.db.medicines.len(),
+        st.domain.db.medicines.len(),
         packages
     )));
     ui.set_summary_soon(SharedString::from(format!(
         "Истекают (≤{} дн.): {}",
-        st.db.warn_days, soon
+        st.domain.db.warn_days, soon
     )));
     ui.set_summary_expired(SharedString::from(format!("Просрочено: {}", expired)));
 
     let cost: f64 = st
+        .domain
         .db
         .medicines
         .iter()
@@ -289,14 +288,14 @@ fn update_summary(ui: &AppWindow, st: &State) {
 }
 
 /// Пересобирает таблицу упаковок выбранного лекарства (списанные — по флагу).
-fn rebuild_packages(ui: &AppWindow, st: &State) {
+fn rebuild_packages(ui: &AppWindow, st: &UiState) {
     let Some(m) = st.selected() else {
         ui.set_packages(ModelRc::default());
         ui.set_packages_header(SharedString::from("Упаковки"));
         return;
     };
     let t = today();
-    let warn = st.db.warn_days as i64;
+    let warn = st.domain.db.warn_days as i64;
     let show_disposed = ui.get_show_disposed();
 
     let mut pkgs: Vec<&Package> = m
@@ -392,7 +391,7 @@ fn rebuild_packages(ui: &AppWindow, st: &State) {
 }
 
 /// Заполняет панель деталей; при `reset_form` сбрасывает форму упаковки.
-fn update_details(ui: &AppWindow, st: &mut State, reset_form: bool) {
+fn update_details(ui: &AppWindow, st: &mut UiState, reset_form: bool) {
     update_details_readonly(ui, st);
     if reset_form {
         reset_pkg_form(ui, st);
@@ -400,7 +399,7 @@ fn update_details(ui: &AppWindow, st: &mut State, reset_form: bool) {
 }
 
 /// Заполнение деталей без побочных эффектов — пригодно для таймера.
-fn update_details_readonly(ui: &AppWindow, st: &State) {
+fn update_details_readonly(ui: &AppWindow, st: &UiState) {
     match st.selected() {
         None => {
             ui.set_has_selection(false);
@@ -420,14 +419,14 @@ fn update_details_readonly(ui: &AppWindow, st: &State) {
 }
 
 /// Пересчёт подсветки и сводки по текущей дате (вызывается таймером).
-fn refresh_statuses(ui: &AppWindow, st: &State) {
+fn refresh_statuses(ui: &AppWindow, st: &UiState) {
     rebuild_list(ui, st);
     update_summary(ui, st);
     update_details_readonly(ui, st);
 }
 
 /// Сдвигает выделение по видимому (отфильтрованному) списку — клавиши ↑/↓.
-fn move_selection(ui: &AppWindow, st: &mut State, delta: i32) {
+fn move_selection(ui: &AppWindow, st: &mut UiState, delta: i32) {
     let model = ui.get_medicines();
     let ids: Vec<i32> = (0..model.row_count())
         .filter_map(|i| model.row_data(i).map(|r| r.id))
@@ -447,7 +446,7 @@ fn pkg_desc(p: &Package) -> String {
 }
 
 /// Календарная сетка: 6 недель × 7 дней от отображаемого месяца.
-fn cal_rebuild(ui: &AppWindow, st: &State) {
+fn cal_rebuild(ui: &AppWindow, st: &UiState) {
     let Some(grid) = cal_grid(st.cal_year, st.cal_month, today()) else {
         return;
     };
@@ -474,19 +473,19 @@ fn cal_rebuild(ui: &AppWindow, st: &State) {
     )));
 }
 
-fn refresh_all(ui: &AppWindow, st: &mut State, reset_form: bool) {
+fn refresh_all(ui: &AppWindow, st: &mut UiState, reset_form: bool) {
     rebuild_list(ui, st);
     update_summary(ui, st);
     update_details(ui, st, reset_form);
 }
 
 /// Точечное обновление строки лекарства в видимом списке (без сброса прокрутки).
-fn update_row(ui: &AppWindow, id: i32, st: &State) {
-    let Some(m) = st.db.medicine(id) else {
+fn update_row(ui: &AppWindow, id: i32, st: &UiState) {
+    let Some(m) = st.domain.db.medicine(id) else {
         return;
     };
     let t = today();
-    let warn = st.db.warn_days as i64;
+    let warn = st.domain.db.warn_days as i64;
     let row = build_med_row(m, &medicine_info(m, t, warn));
 
     let model = ui.get_medicines();
@@ -502,7 +501,7 @@ fn update_row(ui: &AppWindow, id: i32, st: &State) {
 
 // ---------- Форма упаковки ----------
 
-fn reset_pkg_form(ui: &AppWindow, st: &mut State) {
+fn reset_pkg_form(ui: &AppWindow, st: &mut UiState) {
     st.pkg_edit_id = -1;
     st.pending_photo = None;
     ui.set_pending_photo(false);
@@ -520,7 +519,7 @@ fn reset_pkg_form(ui: &AppWindow, st: &mut State) {
 }
 
 /// Живая валидация формы упаковки: срок, период после вскрытия, цена.
-fn validate_pkg_form(ui: &AppWindow, st: &State) {
+fn validate_pkg_form(ui: &AppWindow, st: &UiState) {
     match parse_package_input(
         ui.get_pkg_expiry().as_str(),
         ui.get_pkg_period().as_str(),
@@ -534,7 +533,7 @@ fn validate_pkg_form(ui: &AppWindow, st: &State) {
         }
         Ok(input) => {
             let days = days_left(input.expiry, today());
-            let s = status_for(days, st.db.warn_days as i64);
+            let s = status_for(days, st.domain.db.warn_days as i64);
             let mut msg = if input.month_only {
                 format!(
                     "месяц: годен до {} · {}",
@@ -566,10 +565,10 @@ fn reset_delete_armed(ui: &AppWindow) {
 }
 
 /// Сохраняет базу на диск и показывает результат в статусной строке.
-fn persist(ui: &AppWindow, st: &State) {
-    match storage::save(&st.db) {
+fn persist(ui: &AppWindow, st: &UiState) {
+    match storage::save(&st.domain.db) {
         Ok(path) => {
-            st.unsaved.set(false);
+            st.domain.unsaved.set(false);
             ui.set_status_message(SharedString::from(format!(
                 "Сохранено {} · {}",
                 Local::now().format("%H:%M:%S"),
@@ -577,7 +576,7 @@ fn persist(ui: &AppWindow, st: &State) {
             )));
         }
         Err(e) => {
-            st.unsaved.set(true);
+            st.domain.unsaved.set(true);
             ui.set_save_error(true);
             ui.set_status_message(SharedString::from(format!(
                 "ОШИБКА сохранения: {e} — проверьте, что диск и папка доступны для записи"
@@ -586,56 +585,38 @@ fn persist(ui: &AppWindow, st: &State) {
     }
 }
 
-/// Снимок состояния до мутации + синхронизация кнопок отмены/повтора.
-fn commit_history(ui: &AppWindow, st: &mut State, snapshot: Database) {
-    st.history.commit(snapshot);
-    st.last_commit_kind = None;
+/// Снимок в историю + синхронизация кнопок отмены/повтора (UI-часть).
+fn commit_history(ui: &AppWindow, st: &mut UiState, snapshot: Database) {
+    st.domain.commit(snapshot);
     sync_history_ui(ui, st);
 }
 
-/// То же со «склейкой» последовательных правок одного поля: правка имени по
-/// буквам — это один шаг отмены, а не десяток.
-fn commit_history_coalesced(ui: &AppWindow, st: &mut State, snapshot: Database, kind: EditKind) {
-    if st.last_commit_kind != Some(kind) {
-        st.history.commit(snapshot);
-    }
-    st.last_commit_kind = Some(kind);
+/// То же со «склейкой» последовательных правок одного поля — логика в ядре
+/// (`DomainState::commit_coalesced`).
+fn commit_history_coalesced(ui: &AppWindow, st: &mut UiState, snapshot: Database, kind: EditKind) {
+    st.domain.commit_coalesced(snapshot, kind);
     sync_history_ui(ui, st);
 }
 
-#[derive(PartialEq, Clone, Copy)]
-enum EditKind {
-    Name,
-    Note,
-    Form,
-    WarnDays,
-}
-
-fn sync_history_ui(ui: &AppWindow, st: &State) {
-    ui.set_can_undo(st.history.can_undo());
-    ui.set_can_redo(st.history.can_redo());
+fn sync_history_ui(ui: &AppWindow, st: &UiState) {
+    ui.set_can_undo(st.domain.can_undo());
+    ui.set_can_redo(st.domain.can_redo());
 }
 
 /// Стандартный хвост мутационного колбэка: снимок в историю → полный refresh
 /// → сохранение на диск. `prev` — снимок `db`, снятый ДО мутации.
-fn commit_refresh_persist(ui: &AppWindow, st: &mut State, prev: Database, reset_form: bool) {
+fn commit_refresh_persist(ui: &AppWindow, st: &mut UiState, prev: Database, reset_form: bool) {
     commit_history(ui, st, prev);
     refresh_all(ui, st, reset_form);
     persist(ui, st);
 }
 
-/// Шаг по истории (undo при `backwards`, иначе redo): подмена базы, сброс
-/// выделения на существующее лекарство, refresh и сохранение.
-fn history_step(ui: &AppWindow, st: &mut State, backwards: bool) {
-    let cur = st.db.clone();
-    let next = if backwards {
-        st.history.undo(cur)
-    } else {
-        st.history.redo(cur)
-    };
-    let Some(next) = next else { return };
-    st.db = next;
-    st.last_commit_kind = None;
+/// Шаг по истории (undo при `backwards`, иначе redo): подмену базы делает
+/// ядро (`step_history`), UI сбрасывает выделение, перерисовывает и сохраняет.
+fn history_step(ui: &AppWindow, st: &mut UiState, backwards: bool) {
+    if !st.domain.step_history(backwards) {
+        return;
+    }
     if st.selected().is_none() {
         st.selected_id = -1;
         ui.set_selected_id(-1);
@@ -713,16 +694,13 @@ fn main() -> Result<(), slint::PlatformError> {
     };
     ui.set_status_message(SharedString::from(startup_msg));
 
-    let state = Rc::new(RefCell::new(State {
-        db,
-        history: History::new(50),
+    let state = Rc::new(RefCell::new(UiState {
+        domain: DomainState::new(db, 50),
         selected_id: -1,
         search: String::new(),
         filter_idx: 0,
         sort_idx: 0,
         pkg_edit_id: -1,
-        last_commit_kind: None,
-        unsaved: Cell::new(false),
         photo_cache: RefCell::new(HashMap::new()),
         pending_photo: None,
         cal_year: Local::now().year(),
@@ -732,19 +710,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // Стартовое выделение: лекарство с самым близким сроком годности
     {
         let mut st = state.borrow_mut();
-        let t = today();
-        let warn = st.db.warn_days as i64;
-        let mut best: Option<(i64, i32)> = None;
-        for m in &st.db.medicines {
-            let info = medicine_info(m, t, warn);
-            if info.nearest.is_some() {
-                let key = (info.nearest_days, m.id);
-                if best.is_none_or(|b| key < b) {
-                    best = Some(key);
-                }
-            }
-        }
-        st.selected_id = best.map(|b| b.1).unwrap_or(-1);
+        st.selected_id = initial_selection(&st.domain.db, today());
         ui.set_selected_id(st.selected_id);
         refresh_all(&ui, &mut st, true);
         sync_history_ui(&ui, &st);
@@ -773,7 +739,7 @@ fn main() -> Result<(), slint::PlatformError> {
             move || {
                 if let Some(ui) = h.upgrade() {
                     let st = s.borrow();
-                    if st.unsaved.get() {
+                    if st.domain.unsaved.get() {
                         persist(&ui, &st);
                     }
                 }
@@ -792,16 +758,17 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     with_state!(ui, state, on_add_medicine, |ui, mut st| {
-        let prev = st.db.clone();
-        let id = st.db.new_med_id();
-        st.db.medicines.push(Medicine {
+        let prev = st.domain.db.clone();
+        let id = st.domain.db.new_med_id();
+        st.domain.db.medicines.push(Medicine {
             id,
             name: "Новое лекарство".to_string(),
             form: FORMS[0].to_string(),
             note: String::new(),
             packages: Vec::new(),
         });
-        st.db
+        st.domain
+            .db
             .journal_push("лекарство добавлено", "Новое лекарство", "");
         st.selected_id = id;
         st.search.clear();
@@ -817,11 +784,11 @@ fn main() -> Result<(), slint::PlatformError> {
 
     with_state!(ui, state, on_delete_medicine, |ui, mut st| {
         let sel = st.selected_id;
-        let prev = st.db.clone();
+        let prev = st.domain.db.clone();
         let name = st.selected().map(|m| m.name.clone());
-        st.db.medicines.retain(|m| m.id != sel);
+        st.domain.db.medicines.retain(|m| m.id != sel);
         if let Some(n) = name {
-            st.db.journal_push("лекарство удалено", &n, "");
+            st.domain.db.journal_push("лекарство удалено", &n, "");
         }
         st.selected_id = -1;
         ui.set_selected_id(-1);
@@ -831,7 +798,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     let timer = Rc::clone(&save_timer);
     with_state!(ui, state, on_name_edited, |ui, mut st, text| {
-        let prev = st.db.clone();
+        let prev = st.domain.db.clone();
         if let Some(m) = st.selected_mut() {
             m.name = text.to_string();
         }
@@ -840,7 +807,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let needle = text.trim().to_lowercase();
         let mut sugg: Vec<SharedString> = Vec::new();
         if !needle.is_empty() {
-            for m in &st.db.medicines {
+            for m in &st.domain.db.medicines {
                 if m.id == st.selected_id {
                     continue;
                 }
@@ -859,23 +826,23 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.set_suggestions(ModelRc::from(Rc::new(VecModel::from(sugg))));
         let id = st.selected_id;
         update_row(&ui, id, &st);
-        st.unsaved.set(true);
+        st.domain.unsaved.set(true);
         timer.restart();
     });
 
     let timer = Rc::clone(&save_timer);
     with_state!(ui, state, on_note_edited, |ui, mut st, text| {
-        let prev = st.db.clone();
+        let prev = st.domain.db.clone();
         if let Some(m) = st.selected_mut() {
             m.note = text.to_string();
         }
         commit_history_coalesced(&ui, &mut st, prev, EditKind::Note);
-        st.unsaved.set(true);
+        st.domain.unsaved.set(true);
         timer.restart();
     });
 
     with_state!(ui, state, on_form_selected, |ui, mut st, idx| {
-        let prev = st.db.clone();
+        let prev = st.domain.db.clone();
         let form = FORMS
             .get(idx as usize)
             .map(|f| f.to_string())
@@ -905,8 +872,8 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     with_state!(ui, state, on_warn_days_changed, |ui, mut st, value| {
-        let prev = st.db.clone();
-        st.db.warn_days = value;
+        let prev = st.domain.db.clone();
+        st.domain.db.warn_days = value;
         commit_history_coalesced(&ui, &mut st, prev, EditKind::WarnDays);
         refresh_all(&ui, &mut st, false);
         persist(&ui, &st);
@@ -1007,13 +974,13 @@ fn main() -> Result<(), slint::PlatformError> {
             return;
         }
 
-        let prev = st.db.clone();
+        let prev = st.domain.db.clone();
         let sel = st.selected_id;
         let edit_id = st.pkg_edit_id;
         let mut journal_note: Option<(String, String)> = None;
         match edit_id {
             -1 => {
-                let pid = st.db.new_pkg_id();
+                let pid = st.domain.db.new_pkg_id();
                 // отложенное фото выбранной в режиме создания упаковки
                 let mut attached_photo = String::new();
                 if let Some(src) = st.pending_photo.take() {
@@ -1028,7 +995,7 @@ fn main() -> Result<(), slint::PlatformError> {
                         }
                     }
                 }
-                if let Some(m) = st.db.medicine_mut(sel) {
+                if let Some(m) = st.domain.db.medicine_mut(sel) {
                     m.packages.push(Package {
                         id: pid,
                         expiry,
@@ -1048,7 +1015,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 }
             }
             pid => {
-                if let Some(m) = st.db.medicine_mut(sel) {
+                if let Some(m) = st.domain.db.medicine_mut(sel) {
                     if let Some(p) = m.packages.iter_mut().find(|p| p.id == pid) {
                         p.expiry = expiry;
                         p.month_only = month_only;
@@ -1070,14 +1037,14 @@ fn main() -> Result<(), slint::PlatformError> {
             } else {
                 "добавлена упаковка"
             };
-            st.db.journal_push(kind, &name, &pdesc);
+            st.domain.db.journal_push(kind, &name, &pdesc);
         }
         reset_pkg_form(&ui, &mut st);
         commit_refresh_persist(&ui, &mut st, prev, false);
     });
 
     with_state!(ui, state, on_pkg_delete, |ui, mut st, pid| {
-        let prev = st.db.clone();
+        let prev = st.domain.db.clone();
         let mut jnote: Option<(String, String)> = None;
         if let Some(m) = st.selected_mut() {
             if let Some(p) = m.packages.iter().find(|p| p.id == pid) {
@@ -1086,7 +1053,7 @@ fn main() -> Result<(), slint::PlatformError> {
             m.packages.retain(|p| p.id != pid);
         }
         if let Some((n, d)) = jnote {
-            st.db.journal_push("упаковка удалена", &n, &d);
+            st.domain.db.journal_push("упаковка удалена", &n, &d);
         }
         if st.pkg_edit_id == pid {
             st.pkg_edit_id = -1;
@@ -1095,7 +1062,7 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     with_state!(ui, state, on_export_csv, |ui, st| {
-        let Ok(exported) = csv::export_csv(&st.db) else {
+        let Ok(exported) = csv::export_csv(&st.domain.db) else {
             ui.set_status_message(SharedString::from("Ошибка экспорта"));
             return;
         };
@@ -1108,7 +1075,7 @@ fn main() -> Result<(), slint::PlatformError> {
     // ===== Жизненный цикл упаковки: открытие, списание, возврат =====
 
     with_state!(ui, state, on_pkg_open, |ui, mut st, pid| {
-        let prev = st.db.clone();
+        let prev = st.domain.db.clone();
         let mut jnote: Option<(String, String)> = None;
         if let Some(m) = st.selected_mut() {
             if let Some(p) = m
@@ -1125,13 +1092,13 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         }
         if let Some((n, d)) = jnote {
-            st.db.journal_push("упаковка открыта", &n, &d);
+            st.domain.db.journal_push("упаковка открыта", &n, &d);
             commit_refresh_persist(&ui, &mut st, prev, false);
         }
     });
 
     with_state!(ui, state, on_pkg_dispose, |ui, mut st, pid, reason| {
-        let prev = st.db.clone();
+        let prev = st.domain.db.clone();
         let mut jnote: Option<(String, String)> = None;
         if let Some(m) = st.selected_mut() {
             if let Some(p) = m
@@ -1150,13 +1117,13 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         }
         if let Some((n, d)) = jnote {
-            st.db.journal_push("упаковка списана", &n, &d);
+            st.domain.db.journal_push("упаковка списана", &n, &d);
             commit_refresh_persist(&ui, &mut st, prev, false);
         }
     });
 
     with_state!(ui, state, on_pkg_restore, |ui, mut st, pid| {
-        let prev = st.db.clone();
+        let prev = st.domain.db.clone();
         let mut jnote: Option<(String, String)> = None;
         if let Some(m) = st.selected_mut() {
             if let Some(p) = m
@@ -1169,7 +1136,8 @@ fn main() -> Result<(), slint::PlatformError> {
             }
         }
         if let Some((n, d)) = jnote {
-            st.db
+            st.domain
+                .db
                 .journal_push("упаковка возвращена в работу", &n, &d);
             commit_refresh_persist(&ui, &mut st, prev, false);
         }
@@ -1194,6 +1162,7 @@ fn main() -> Result<(), slint::PlatformError> {
         with_state!(ui, state, on_open_journal, |_ui, st| {
             let j = jh.unwrap();
             let rows: Vec<SharedString> = st
+                .domain
                 .db
                 .events
                 .iter()
@@ -1215,7 +1184,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // Автодополнение названия по уже заведённым лекарствам
     with_state!(ui, state, on_suggestion_picked, |ui, mut st, text| {
-        let prev = st.db.clone();
+        let prev = st.domain.db.clone();
         if let Some(m) = st.selected_mut() {
             m.name = text.to_string();
         }
@@ -1271,7 +1240,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let jh = shopping.as_weak();
         with_state!(ui, state, on_open_shopping, |_ui, st| {
             let j = jh.unwrap();
-            let rows: Vec<SharedString> = shopping_list(&st.db, today())
+            let rows: Vec<SharedString> = shopping_list(&st.domain.db, today())
                 .into_iter()
                 .map(SharedString::from)
                 .collect();
@@ -1372,14 +1341,15 @@ fn main() -> Result<(), slint::PlatformError> {
                 .to_string_lossy()
                 .to_string();
             let mut st = s.borrow_mut();
-            let prev = st.db.clone();
-            st.db = db;
+            let prev = st.domain.db.clone();
+            st.domain.db = db;
             st.selected_id = -1;
             ui.set_selected_id(-1);
             reset_delete_armed(&ui);
             commit_history(&ui, &mut st, prev);
             refresh_all(&ui, &mut st, true);
-            st.db
+            st.domain
+                .db
                 .journal_push("восстановлено из бэкапа", &fname, "");
             persist(&ui, &st);
             j.set_note(SharedString::from(format!(
@@ -1453,22 +1423,22 @@ fn main() -> Result<(), slint::PlatformError> {
                 return;
             }
             let mut st = s.borrow_mut();
-            let prev = st.db.clone();
+            let prev = st.domain.db.clone();
             let mut total_pkgs = 0usize;
             for m in &mut meds {
-                m.id = st.db.new_med_id();
+                m.id = st.domain.db.new_med_id();
                 for p in &mut m.packages {
-                    p.id = st.db.new_pkg_id();
+                    p.id = st.domain.db.new_pkg_id();
                     total_pkgs += 1;
                 }
-                st.db.journal_push(
+                st.domain.db.journal_push(
                     "импорт из CSV",
                     &m.name,
                     &format!("упаковок: {}", m.packages.len()),
                 );
             }
             let imported_count = meds.len();
-            st.db.medicines.append(&mut meds);
+            st.domain.db.medicines.append(&mut meds);
             st.selected_id = -1;
             ui.set_selected_id(-1);
             commit_refresh_persist(&ui, &mut st, prev, true);
@@ -1577,8 +1547,8 @@ fn main() -> Result<(), slint::PlatformError> {
     // Окно закрыто: сбрасываем несохранённые правки текста (окно дебаунса).
     {
         let st = state.borrow();
-        if st.unsaved.get() {
-            let _ = storage::save(&st.db);
+        if st.domain.unsaved.get() {
+            let _ = storage::save(&st.domain.db);
         }
     }
     Ok(())
