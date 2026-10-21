@@ -3,6 +3,7 @@
 //! Точка входа: загрузка данных, сборка окна Slint, связка колбэков.
 
 use apteka_core::history::History;
+use apteka_core::input::{cal_grid, move_selection_index, parse_package_input};
 use apteka_core::model::*;
 use apteka_core::storage;
 
@@ -388,14 +389,7 @@ fn move_selection(ui: &AppWindow, st: &mut State, delta: i32) {
     let ids: Vec<i32> = (0..model.row_count())
         .filter_map(|i| model.row_data(i).map(|r| r.id))
         .collect();
-    if ids.is_empty() {
-        return;
-    }
-    let new_idx = match ids.iter().position(|&id| id == st.selected_id) {
-        Some(i) => ((i as i64) + delta as i64).clamp(0, ids.len() as i64 - 1) as usize,
-        None if delta < 0 => ids.len() - 1,
-        None => 0,
-    };
+    let Some(new_idx) = move_selection_index(&ids, st.selected_id, delta) else { return };
     st.selected_id = ids[new_idx];
     ui.set_selected_id(st.selected_id);
     reset_delete_armed(ui);
@@ -409,27 +403,22 @@ fn pkg_desc(p: &Package) -> String {
 
 /// Календарная сетка: 6 недель × 7 дней от отображаемого месяца.
 fn cal_rebuild(ui: &AppWindow, st: &State) {
-    let Some(first) = NaiveDate::from_ymd_opt(st.cal_year, st.cal_month, 1) else { return };
-    let week_start =
-        first - apteka_core::chrono::Duration::days(first.weekday().num_days_from_monday() as i64);
-    let t = today();
-    let mut rows: Vec<CalRow> = Vec::new();
-    for w in 0..6u32 {
-        let cells: Vec<CalCell> = (0..7u32)
-            .map(|d| {
-                let day = week_start + apteka_core::chrono::Duration::days((w * 7 + d) as i64);
-                CalCell {
-                    label: format!("{}", day.day()).into(),
-                    ymd: day.format("%Y-%m-%d").to_string().into(),
-                    in_month: day.month() == st.cal_month && day.year() == st.cal_year,
-                    today: day == t,
-                }
-            })
-            .collect();
-        rows.push(CalRow {
-            cells: ModelRc::from(Rc::new(VecModel::from(cells))),
-        });
-    }
+    let Some(grid) = cal_grid(st.cal_year, st.cal_month, today()) else { return };
+    let rows: Vec<CalRow> = grid
+        .into_iter()
+        .map(|row| CalRow {
+            cells: ModelRc::from(Rc::new(VecModel::from(
+                row.into_iter()
+                    .map(|(label, ymd, in_month, today)| CalCell {
+                        label: label.into(),
+                        ymd: ymd.into(),
+                        in_month,
+                        today,
+                    })
+                    .collect::<Vec<_>>(),
+            ))),
+        })
+        .collect();
     ui.set_cal_weeks(ModelRc::from(Rc::new(VecModel::from(rows))));
     ui.set_cal_month_label(SharedString::from(format!(
         "{} {}",
@@ -483,71 +472,41 @@ fn reset_pkg_form(ui: &AppWindow, st: &mut State) {
 
 /// Живая валидация формы упаковки: срок, период после вскрытия, цена.
 fn validate_pkg_form(ui: &AppWindow, st: &State) {
-    let text = ui.get_pkg_expiry().to_string();
-    if text.trim().is_empty() {
-        ui.set_pkg_validation(SharedString::from(
-            "Формат: ГГГГ-ММ-ДД, ДД.ММ.ГГГГ или ММ.ГГГГ (годен до конца месяца)",
-        ));
-        ui.set_pkg_validation_color(color_grey());
-        ui.set_pkg_save_enabled(false);
-        return;
-    }
-    let Some((d, month_only)) = parse_date_input(&text) else {
-        ui.set_pkg_validation(SharedString::from("Неверная дата"));
-        ui.set_pkg_validation_color(color_red());
-        ui.set_pkg_save_enabled(false);
-        return;
-    };
-    // период после вскрытия: пусто → не применим
-    let period_text = ui.get_pkg_period().to_string();
-    let open_period_days = if period_text.trim().is_empty() {
-        None
-    } else {
-        match period_text.trim().parse::<i32>() {
-            Ok(v) if (1..=3650).contains(&v) => Some(v),
-            _ => {
-                ui.set_pkg_validation(SharedString::from(
-                    "Период после вскрытия: целое число дней от 1 до 3650",
-                ));
-                ui.set_pkg_validation_color(color_red());
-                ui.set_pkg_save_enabled(false);
-                return;
-            }
-        }
-    };
-    // цена: пусто → не указана
-    let price_text = ui.get_pkg_price().to_string();
-    if !price_text.trim().is_empty() {
-        let ok = price_text
-            .trim()
-            .replace(',', ".")
-            .parse::<f64>()
-            .map(|v| (0.0..=1_000_000.0).contains(&v))
-            .unwrap_or(false);
-        if !ok {
-            ui.set_pkg_validation(SharedString::from("Цена: число, например 350 или 249.99"));
-            ui.set_pkg_validation_color(color_red());
+    match parse_package_input(
+        ui.get_pkg_expiry().as_str(),
+        ui.get_pkg_period().as_str(),
+        ui.get_pkg_price().as_str(),
+    ) {
+        Err(msg) => {
+            let neutral = msg.starts_with("Формат:");
+            ui.set_pkg_validation(SharedString::from(msg));
+            ui.set_pkg_validation_color(if neutral { color_grey() } else { color_red() });
             ui.set_pkg_save_enabled(false);
-            return;
+        }
+        Ok(input) => {
+            let days = days_left(input.expiry, today());
+            let s = status_for(days, st.db.warn_days as i64);
+            let mut msg = if input.month_only {
+                format!(
+                    "месяц: годен до {} · {}",
+                    fmt_date(input.expiry),
+                    status_text(s, days)
+                )
+            } else {
+                status_text(s, days)
+            };
+            if input.open_period_days.is_some() {
+                msg.push_str(" · период применится после вскрытия");
+            }
+            ui.set_pkg_validation(SharedString::from(msg));
+            ui.set_pkg_validation_color(match s {
+                STATUS_EXPIRED => color_red(),
+                STATUS_SOON => color_amber(),
+                _ => color_green(),
+            });
+            ui.set_pkg_save_enabled(true);
         }
     }
-    let days = days_left(d, today());
-    let s = status_for(days, st.db.warn_days as i64);
-    let mut msg = if month_only {
-        format!("месяц: годен до {} · {}", fmt_date(d), status_text(s, days))
-    } else {
-        status_text(s, days)
-    };
-    if open_period_days.is_some() {
-        msg.push_str(" · период применится после вскрытия");
-    }
-    ui.set_pkg_validation(SharedString::from(msg));
-    ui.set_pkg_validation_color(match s {
-        STATUS_EXPIRED => color_red(),
-        STATUS_SOON => color_amber(),
-        _ => color_green(),
-    });
-    ui.set_pkg_save_enabled(true);
 }
 
 // ---------- Служебные ----------

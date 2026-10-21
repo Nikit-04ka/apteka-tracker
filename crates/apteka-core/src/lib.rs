@@ -2,6 +2,7 @@
 //! Не содержит UI — пригодно для тестов, CLI и будущих интерфейсов.
 
 pub mod history;
+pub mod input;
 pub mod model;
 pub mod storage;
 
