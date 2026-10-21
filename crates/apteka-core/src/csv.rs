@@ -169,12 +169,12 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
     let today = Local::now().date_naive();
     let mut out = String::new();
     out.push('\u{FEFF}');
-    out.push_str("Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество;Цена;Открыта;Списано;Комментарий;Категории\r\n");
+    out.push_str("Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество;Цена;Открыта;Списано;Комментарий;Категории;Куплена\r\n");
     for m in &db.medicines {
         let tags_cell = esc(&m.tags.join(", "));
         if m.packages.is_empty() {
             out.push_str(&format!(
-                "{};{};{};;;;;;;;;{}\r\n",
+                "{};{};{};;;;;;;;;{};\r\n",
                 esc(&m.name),
                 esc(&m.form),
                 esc(&m.note),
@@ -209,8 +209,9 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
                 .as_ref()
                 .map(|d| format!("{} {}", dispose_reason_text(d.reason), fmt_date(d.date)))
                 .unwrap_or_default();
+            let purchased_cell = p.purchase_date.map(fmt_date).unwrap_or_default();
             out.push_str(&format!(
-                "{};{};{};{};{};{};{};{};{};{};{};{}\r\n",
+                "{};{};{};{};{};{};{};{};{};{};{};{};{}\r\n",
                 esc(&m.name),
                 esc(&m.form),
                 esc(&m.note),
@@ -222,7 +223,8 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
                 opened_cell,
                 disposed_cell,
                 esc(&p.note),
-                tags_cell
+                tags_cell,
+                purchased_cell
             ));
         }
     }
@@ -324,6 +326,12 @@ pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
             String::new()
         };
         let tags_raw = if row.len() > 11 { row[11].trim() } else { "" };
+        // «Куплена» (необязательная колонка): нечитаемая дата — игнорируем
+        let purchase_date = if row.len() > 12 && !row[12].trim().is_empty() {
+            parse_date_input(row[12].trim()).map(|(d, _)| d)
+        } else {
+            None
+        };
         let package = Package {
             id: 0,
             expiry,
@@ -331,6 +339,7 @@ pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
             quantity,
             note: pnote,
             price,
+            purchase_date,
             opened: None,
             open_period_days: None,
             disposed: None,
@@ -383,7 +392,7 @@ mod tests {
             name: "Парацетамол \"Тева\"".to_string(),
             form: "Таблетки".to_string(),
             note: "от головы".to_string(),
-            tags: Vec::new(),
+            tags: vec!["жаропонижающее".to_string()],
             packages: vec![
                 Package {
                     id: 1,
@@ -392,6 +401,7 @@ mod tests {
                     quantity: "2 уп.".to_string(),
                     note: "в ящике".to_string(),
                     price: Some(350.0),
+                    purchase_date: chrono::NaiveDate::from_ymd_opt(2025, 8, 15),
                     opened: None,
                     open_period_days: None,
                     disposed: None,
@@ -404,6 +414,7 @@ mod tests {
                     quantity: "1 фл.".to_string(),
                     note: String::new(),
                     price: None,
+                    purchase_date: None,
                     opened: None,
                     open_period_days: None,
                     disposed: None,
@@ -452,18 +463,22 @@ mod tests {
     }
 
     #[test]
-    fn csv_tags_roundtrip() {
+    fn csv_tags_and_purchases_roundtrip() {
         let dir = temp_dir("tags");
         let path = dir.join("export.csv");
-        let mut db = sample_db();
-        db.medicines[0].tags = vec!["жаропонижающее".to_string(), "детское".to_string()];
+        let db = sample_db();
         export_csv_to(&db, &path).unwrap();
         let (meds, skipped) = import_csv(&path).unwrap();
         assert_eq!(skipped, 0);
         assert_eq!(
             meds[0].tags,
-            vec!["жаропонижающее".to_string(), "детское".to_string()],
+            vec!["жаропонижающее".to_string()],
             "категории переживают экспорт/импорт"
+        );
+        assert_eq!(
+            meds[0].packages[0].purchase_date,
+            chrono::NaiveDate::from_ymd_opt(2025, 8, 15),
+            "дата покупки переживает экспорт/импорт"
         );
         fs::remove_dir_all(&dir).ok();
     }

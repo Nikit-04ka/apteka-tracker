@@ -66,11 +66,12 @@ pub struct PackageForm {
     pub note: String,
     pub price: Option<f64>,
     pub open_period_days: Option<i32>,
+    pub purchase_date: Option<NaiveDate>,
 }
 
 impl PackageForm {
-    /// Разбор всех пяти строк формы. `quantity`/`note` — текст как есть;
-    /// срок, период и цена — через `parse_package_input` (Err — готовое
+    /// Разбор всех строк формы. `quantity`/`note` — текст как есть;
+    /// срок, период, цена и дата покупки — через парсеры (`Err` — готовое
     /// сообщение для показа пользователю).
     pub fn parse(
         expiry: &str,
@@ -78,8 +79,21 @@ impl PackageForm {
         note: &str,
         price: &str,
         period: &str,
+        purchased: &str,
     ) -> Result<Self, String> {
         let input = parse_package_input(expiry, period, price)?;
+        let purchase_date = match purchased.trim() {
+            "" => None,
+            t => match parse_date_input(t) {
+                Some((d, _)) => Some(d),
+                None => {
+                    return Err(
+                        "Дата покупки: ГГГГ-ММ-ДД или ДД.ММ.ГГГГ (можно оставить пустым)"
+                            .to_string(),
+                    )
+                }
+            },
+        };
         Ok(Self {
             expiry: input.expiry,
             month_only: input.month_only,
@@ -87,6 +101,7 @@ impl PackageForm {
             note: note.to_string(),
             price: input.price,
             open_period_days: input.open_period_days,
+            purchase_date,
         })
     }
 
@@ -99,6 +114,7 @@ impl PackageForm {
             quantity: self.quantity,
             note: self.note,
             price: self.price,
+            purchase_date: self.purchase_date,
             opened: None,
             open_period_days: self.open_period_days,
             disposed: None,
@@ -115,6 +131,7 @@ impl PackageForm {
         p.note = self.note.clone();
         p.price = self.price;
         p.open_period_days = self.open_period_days;
+        p.purchase_date = self.purchase_date;
     }
 }
 
@@ -272,7 +289,7 @@ mod tests {
     }
 
     fn form(expiry: &str, price: &str, period: &str) -> PackageForm {
-        PackageForm::parse(expiry, "2 уп.", "аптечка", price, period).unwrap()
+        PackageForm::parse(expiry, "2 уп.", "аптечка", price, period, "").unwrap()
     }
 
     fn pkg() -> Package {
@@ -283,6 +300,7 @@ mod tests {
             quantity: "старое".to_string(),
             note: "старая заметка".to_string(),
             price: Some(100.0),
+            purchase_date: Some(d("2026-09-20")),
             opened: Some(d("2026-10-01")),
             open_period_days: Some(30),
             disposed: Some(crate::model::DisposedInfo {
@@ -302,7 +320,16 @@ mod tests {
         assert_eq!(f.open_period_days, Some(90));
         assert_eq!(f.quantity, "2 уп.");
         assert_eq!(f.note, "аптечка");
-        assert!(PackageForm::parse("мусор", "", "", "", "").is_err());
+        assert!(PackageForm::parse("мусор", "", "", "", "", "").is_err());
+    }
+
+    #[test]
+    fn package_form_purchase_date_optional_but_validated() {
+        let f = PackageForm::parse("2028-01-15", "", "", "", "", "05.03.2026").unwrap();
+        assert_eq!(f.purchase_date, Some(d("2026-03-05")));
+        let empty = PackageForm::parse("2028-01-15", "", "", "", "", "  ").unwrap();
+        assert_eq!(empty.purchase_date, None, "пустое поле — None");
+        assert!(PackageForm::parse("2028-01-15", "", "", "", "", "мусор").is_err());
     }
 
     #[test]
@@ -315,6 +342,10 @@ mod tests {
         assert_eq!(p.note, "аптечка");
         assert_eq!(p.price, None);
         assert_eq!(p.open_period_days, None);
+        assert_eq!(
+            p.purchase_date, None,
+            "дата покупки — поле формы, применяется"
+        );
         // жизненный цикл не тронут
         assert_eq!(p.id, 7);
         assert_eq!(p.opened, Some(d("2026-10-01")));
@@ -330,6 +361,7 @@ mod tests {
         assert!(p.month_only);
         assert_eq!(p.price, Some(12.0));
         assert_eq!(p.open_period_days, Some(30));
+        assert_eq!(p.purchase_date, None);
         assert_eq!(p.opened, None);
         assert_eq!(p.disposed, None);
         assert_eq!(p.photo, "");
@@ -387,6 +419,7 @@ mod tests {
                 quantity: String::new(),
                 note: String::new(),
                 price: None,
+                purchase_date: None,
                 opened: None,
                 open_period_days: None,
                 disposed: None,

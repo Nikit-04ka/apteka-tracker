@@ -153,6 +153,7 @@ mod tests {
                 note: String::new(),
                 photo: String::new(),
                 price: None,
+                purchase_date: None,
                 opened: None,
                 open_period_days: None,
                 disposed: None,

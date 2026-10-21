@@ -18,6 +18,7 @@ fn build_db(n_meds: usize, pkgs_per_med: usize) -> Database {
                 quantity: "2 уп.".to_string(),
                 note: "в ящике, верхняя полка".to_string(),
                 price: Some(350.5),
+                purchase_date: None,
                 opened: if j == 0 { Some(expiry) } else { None },
                 open_period_days: if j == 0 { Some(30) } else { None },
                 disposed: None,

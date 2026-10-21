@@ -612,6 +612,7 @@ fn reset_pkg_form(ui: &AppWindow, st: &mut UiState) {
     ui.set_pkg_note(SharedString::new());
     ui.set_pkg_price(SharedString::new());
     ui.set_pkg_period(SharedString::new());
+    ui.set_pkg_purchase_date(SharedString::new());
     ui.set_pkg_validation(SharedString::from(
         "Формат: ГГГГ-ММ-ДД, ДД.ММ.ГГГГ или ММ.ГГГГ (годен до конца месяца)",
     ));
@@ -633,6 +634,16 @@ fn validate_pkg_form(ui: &AppWindow, st: &UiState) {
             ui.set_pkg_save_enabled(false);
         }
         Ok(input) => {
+            // дата покупки необязательна, но заполненная должна читаться
+            let purchased = ui.get_pkg_purchase_date().trim().to_string();
+            if !purchased.is_empty() && parse_date_input(&purchased).is_none() {
+                ui.set_pkg_validation(SharedString::from(
+                    "Дата покупки: ГГГГ-ММ-ДД или ДД.ММ.ГГГГ (можно оставить пустым)",
+                ));
+                ui.set_pkg_validation_color(color_red());
+                ui.set_pkg_save_enabled(false);
+                return;
+            }
             let days = days_left(input.expiry, today());
             let s = status_for(days, st.domain.db.warn_days as i64);
             let mut msg = if input.month_only {
@@ -1081,9 +1092,10 @@ fn main() -> Result<(), slint::PlatformError> {
                     p.note.clone(),
                     p.price,
                     p.open_period_days,
+                    p.purchase_date,
                 )
             });
-        if let Some((expiry, quantity, note, price, period)) = found {
+        if let Some((expiry, quantity, note, price, period, purchased)) = found {
             // выбранное фото из незавершённого создания не должно «переехать»
             // на редактируемую упаковку
             st.pending_photo = None;
@@ -1093,6 +1105,11 @@ fn main() -> Result<(), slint::PlatformError> {
             ui.set_pkg_note(SharedString::from(note));
             ui.set_pkg_price(price.map(|v| format!("{v:.2}")).unwrap_or_default().into());
             ui.set_pkg_period(period.map(|v| v.to_string()).unwrap_or_default().into());
+            ui.set_pkg_purchase_date(
+                purchased
+                    .map(|d| SharedString::from(fmt_date(d)))
+                    .unwrap_or_default(),
+            );
             st.pkg_edit_id = pid;
             ui.set_pkg_editing(true);
             validate_pkg_form(&ui, &st);
@@ -1154,6 +1171,7 @@ fn main() -> Result<(), slint::PlatformError> {
             &ui.get_pkg_note(),
             &ui.get_pkg_price(),
             &ui.get_pkg_period(),
+            &ui.get_pkg_purchase_date(),
         ) {
             Ok(f) => f,
             Err(_) => return,

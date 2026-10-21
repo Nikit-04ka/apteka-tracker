@@ -123,6 +123,7 @@ mod tests {
                 quantity: "1 шт.".to_string(),
                 note: String::new(),
                 price: None,
+                purchase_date: None,
                 opened: None,
                 open_period_days: None,
                 disposed: None,

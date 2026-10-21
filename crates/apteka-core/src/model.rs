@@ -62,6 +62,9 @@ pub struct Package {
     /// Цена упаковки при покупке, руб. (None — не указана).
     #[serde(default)]
     pub price: Option<f64>,
+    /// Когда куплена (None — не указана; для аналитики затрат).
+    #[serde(default)]
+    pub purchase_date: Option<NaiveDate>,
     /// Дата вскрытия (None — запечатана).
     #[serde(default)]
     pub opened: Option<NaiveDate>,
@@ -434,6 +437,7 @@ mod tests {
             note: String::new(),
             photo: String::new(),
             price: None,
+            purchase_date: None,
             opened: None,
             open_period_days: None,
             disposed: None,
@@ -593,6 +597,7 @@ mod tests {
                 quantity: String::new(),
                 note: String::new(),
                 price: None,
+                purchase_date: None,
                 opened: None,
                 open_period_days: None,
                 disposed: Some(DisposedInfo {
@@ -643,6 +648,7 @@ mod tests {
                 note: String::new(),
                 photo: String::new(),
                 price: None,
+                purchase_date: None,
                 opened: None,
                 open_period_days: None,
                 disposed,

@@ -406,6 +406,7 @@ export component AppWindow inherits Window {
     in-out property <string> summary-cost: "Стоимость: 0 руб.";
     in-out property <string> pkg-price: "";
     in-out property <string> pkg-period: "";
+    in-out property <string> pkg-purchase-date: "";
     in-out property <string> packages-empty-text: "Упаковок пока нет.";
     in-out property <bool> pending-photo: false;
 
@@ -1070,6 +1071,15 @@ export component AppWindow inherits Window {
                                     LineEdit {
                                         text <=> root.pkg-period;
                                         placeholder-text: "напр. 30";
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 3px;
+                                    width: 130px;
+                                    FieldLabel { text: "Куплена"; }
+                                    LineEdit {
+                                        text <=> root.pkg-purchase-date;
+                                        placeholder-text: "необязательно";
                                     }
                                 }
                                 VerticalLayout {
