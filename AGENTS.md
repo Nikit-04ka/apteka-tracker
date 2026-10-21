@@ -55,6 +55,10 @@ docs/screenshot.png
 - «Клонировать упаковку» (`pkg-clone`): форма новой упаковки предзаполняется
   количеством/комментарием клона и сроком «сегодня + 1 год»; сохранение —
   через обычный `pkg-save`.
+- Форма упаковки ↔ Package: единая точка — `input::PackageForm`
+  (`parse` → `into_package(id)` для новой, `apply_to(&mut Package)` для правки).
+  Поштучное присвоение полей упаковки в колбэках не допускается; поля
+  жизненного цикла (id, вскрытие, списание, фото) формой не трогаются.
 - Разделение состояний: `apteka_core::state::DomainState` (db, история отмены,
   unsaved; мутации только методами `commit`/`commit_coalesced`/`step_history`)
   + `UiState` в main.rs (selected_id, search, filter/sort, pkg_edit_id,
@@ -90,5 +94,5 @@ docs/screenshot.png
 
 1. with_state-хелпер: макрос или `fn persist_state(ui, s)`; убрать копипаст-каркас в 20 колбэках main.rs (borrow/commit/refresh/persist). S. — **выполнен**: `with_state!` + `commit_refresh_persist` + `history_step`, `schedule_save` заменён на `save_timer.restart()`.
 2. Разделить State на DomainState (db, history, unsaved — в apteka-core) и UiState (search, filter, selected, pkg_edit_id, pending_photo, cal_*). Граница — чистые функции. M. — **выполнен**: `apteka_core::state::{DomainState, EditKind, initial_selection}` + `UiState` (содержит `domain`); логика истории (склейка, шаг) переехала в ядро с тестами.
-3. Единая точка «форма ↔ Package»: parse_package_input уже в core; добавить PackageForm-структуру и собрать Package из неё в pkg_save (убрать 8-контактную правку полей). M.
+3. Единая точка «форма ↔ Package»: parse_package_input уже в core; добавить PackageForm-структуру и собрать Package из неё в pkg_save (убрать 8-контактную правку полей). M. — **выполнен**: `input::PackageForm` (parse/into_package/apply_to), pkg_save разбирает форму одним вызовом; тесты на «apply не трогает жизненный цикл».
 Шаги 4 (csv.rs) и 5 (Badge/StatusDot централизация) — выполнены.

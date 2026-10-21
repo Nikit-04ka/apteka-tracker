@@ -3,7 +3,7 @@
 //! Точка входа: загрузка данных, сборка окна Slint, связка колбэков.
 
 use apteka_core::csv;
-use apteka_core::input::{cal_grid, move_selection_index, parse_package_input};
+use apteka_core::input::{cal_grid, move_selection_index, parse_package_input, PackageForm};
 use apteka_core::model::*;
 use apteka_core::state::{initial_selection, DomainState, EditKind};
 use apteka_core::storage;
@@ -953,27 +953,20 @@ fn main() -> Result<(), slint::PlatformError> {
     });
 
     with_state!(ui, state, on_pkg_save, |ui, mut st| {
-        let Some((expiry, month_only)) = parse_date_input(&ui.get_pkg_expiry()) else {
-            return;
+        // Разбор формы — до заёма состояния. Кнопка сохранения активна
+        // только после живой валидации, так что Err здесь почти недостижим;
+        // форма — единая точка «форма ↔ Package», поля не присваиваются
+        // поштучно.
+        let form = match PackageForm::parse(
+            &ui.get_pkg_expiry(),
+            &ui.get_pkg_quantity(),
+            &ui.get_pkg_note(),
+            &ui.get_pkg_price(),
+            &ui.get_pkg_period(),
+        ) {
+            Ok(f) => f,
+            Err(_) => return,
         };
-        let quantity = ui.get_pkg_quantity().to_string();
-        let note = ui.get_pkg_note().to_string();
-        let price_text = ui.get_pkg_price().to_string();
-        let price = if price_text.trim().is_empty() {
-            None
-        } else {
-            price_text.trim().replace(',', ".").parse::<f64>().ok()
-        };
-        let period_text = ui.get_pkg_period().to_string();
-        let open_period_days = if period_text.trim().is_empty() {
-            None
-        } else {
-            period_text.trim().parse::<i32>().ok()
-        };
-        if open_period_days.is_some_and(|v| !(1..=3650).contains(&v)) {
-            return;
-        }
-
         let prev = st.domain.db.clone();
         let sel = st.selected_id;
         let edit_id = st.pkg_edit_id;
@@ -995,38 +988,19 @@ fn main() -> Result<(), slint::PlatformError> {
                         }
                     }
                 }
+                let mut pkg = form.into_package(pid);
+                pkg.photo = attached_photo;
+                let desc = pkg_desc(&pkg);
                 if let Some(m) = st.domain.db.medicine_mut(sel) {
-                    m.packages.push(Package {
-                        id: pid,
-                        expiry,
-                        month_only,
-                        quantity: quantity.clone(),
-                        note: note.clone(),
-                        price,
-                        opened: None,
-                        open_period_days,
-                        disposed: None,
-                        photo: attached_photo,
-                    });
-                    journal_note = Some((
-                        m.name.clone(),
-                        format!("срок {}", fmt_date_display(expiry, month_only)),
-                    ));
+                    journal_note = Some((m.name.clone(), desc));
+                    m.packages.push(pkg);
                 }
             }
             pid => {
                 if let Some(m) = st.domain.db.medicine_mut(sel) {
                     if let Some(p) = m.packages.iter_mut().find(|p| p.id == pid) {
-                        p.expiry = expiry;
-                        p.month_only = month_only;
-                        p.quantity = quantity.clone();
-                        p.note = note.clone();
-                        p.price = price;
-                        p.open_period_days = open_period_days;
-                        journal_note = Some((
-                            m.name.clone(),
-                            format!("срок {}", fmt_date_display(expiry, month_only)),
-                        ));
+                        form.apply_to(p);
+                        journal_note = Some((m.name.clone(), pkg_desc(p)));
                     }
                 }
             }

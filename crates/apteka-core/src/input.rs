@@ -1,7 +1,7 @@
 //! Чистая логика валидации и расчётов, переносимая из UI: форма упаковки,
 //! календарная сетка, навигация по списку. Не содержит UI-типов.
 
-use crate::model::parse_date_input;
+use crate::model::{parse_date_input, Package};
 use chrono::{Datelike, NaiveDate};
 
 /// Результат валидации формы упаковки.
@@ -50,6 +50,69 @@ pub fn parse_package_input(
         price,
         open_period_days,
     })
+}
+
+/// Разобранная форма упаковки — единая точка «форма ↔ Package»: создание
+/// новой и правка существующей упаковки идут через неё, а не через
+/// поштучное присвоение полей в UI-колбэке.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackageForm {
+    pub expiry: NaiveDate,
+    pub month_only: bool,
+    pub quantity: String,
+    pub note: String,
+    pub price: Option<f64>,
+    pub open_period_days: Option<i32>,
+}
+
+impl PackageForm {
+    /// Разбор всех пяти строк формы. `quantity`/`note` — текст как есть;
+    /// срок, период и цена — через `parse_package_input` (Err — готовое
+    /// сообщение для показа пользователю).
+    pub fn parse(
+        expiry: &str,
+        quantity: &str,
+        note: &str,
+        price: &str,
+        period: &str,
+    ) -> Result<Self, String> {
+        let input = parse_package_input(expiry, period, price)?;
+        Ok(Self {
+            expiry: input.expiry,
+            month_only: input.month_only,
+            quantity: quantity.to_string(),
+            note: note.to_string(),
+            price: input.price,
+            open_period_days: input.open_period_days,
+        })
+    }
+
+    /// Новая упаковка: жизненный цикл пуст (запечатана, не списана, без фото).
+    pub fn into_package(self, id: i32) -> Package {
+        Package {
+            id,
+            expiry: self.expiry,
+            month_only: self.month_only,
+            quantity: self.quantity,
+            note: self.note,
+            price: self.price,
+            opened: None,
+            open_period_days: self.open_period_days,
+            disposed: None,
+            photo: String::new(),
+        }
+    }
+
+    /// Правка существующей упаковки: обновляются только поля формы —
+    /// id, вскрытие, списание и фото не трогаются.
+    pub fn apply_to(&self, p: &mut Package) {
+        p.expiry = self.expiry;
+        p.month_only = self.month_only;
+        p.quantity = self.quantity.clone();
+        p.note = self.note.clone();
+        p.price = self.price;
+        p.open_period_days = self.open_period_days;
+    }
 }
 
 /// Индекс в видимой списке после сдвига `delta` от `current`.
@@ -136,6 +199,70 @@ mod tests {
             err.starts_with("Формат:"),
             "пустая дата — подсказка, не ошибка"
         );
+    }
+
+    fn form(expiry: &str, price: &str, period: &str) -> PackageForm {
+        PackageForm::parse(expiry, "2 уп.", "аптечка", price, period).unwrap()
+    }
+
+    fn pkg() -> Package {
+        Package {
+            id: 7,
+            expiry: d("2027-01-01"),
+            month_only: false,
+            quantity: "старое".to_string(),
+            note: "старая заметка".to_string(),
+            price: Some(100.0),
+            opened: Some(d("2026-10-01")),
+            open_period_days: Some(30),
+            disposed: Some(crate::model::DisposedInfo {
+                date: d("2026-10-05"),
+                reason: 1,
+            }),
+            photo: "pkg_7.png".to_string(),
+        }
+    }
+
+    #[test]
+    fn package_form_parse_carries_all_fields() {
+        let f = form("01.2028", "350,50", "90");
+        assert_eq!(f.expiry, d("2028-01-31"));
+        assert!(f.month_only);
+        assert_eq!(f.price, Some(350.5));
+        assert_eq!(f.open_period_days, Some(90));
+        assert_eq!(f.quantity, "2 уп.");
+        assert_eq!(f.note, "аптечка");
+        assert!(PackageForm::parse("мусор", "", "", "", "").is_err());
+    }
+
+    #[test]
+    fn package_form_apply_touches_only_form_fields() {
+        let mut p = pkg();
+        form("2028-05-10", "", "").apply_to(&mut p);
+        assert_eq!(p.expiry, d("2028-05-10"));
+        assert!(!p.month_only);
+        assert_eq!(p.quantity, "2 уп.");
+        assert_eq!(p.note, "аптечка");
+        assert_eq!(p.price, None);
+        assert_eq!(p.open_period_days, None);
+        // жизненный цикл не тронут
+        assert_eq!(p.id, 7);
+        assert_eq!(p.opened, Some(d("2026-10-01")));
+        assert!(p.disposed.is_some());
+        assert_eq!(p.photo, "pkg_7.png");
+    }
+
+    #[test]
+    fn package_form_into_package_starts_fresh() {
+        let p = form("01.2028", "12", "30").into_package(42);
+        assert_eq!(p.id, 42);
+        assert_eq!(p.expiry, d("2028-01-31"));
+        assert!(p.month_only);
+        assert_eq!(p.price, Some(12.0));
+        assert_eq!(p.open_period_days, Some(30));
+        assert_eq!(p.opened, None);
+        assert_eq!(p.disposed, None);
+        assert_eq!(p.photo, "");
     }
 
     #[test]
