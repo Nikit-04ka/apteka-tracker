@@ -47,7 +47,9 @@ docs/screenshot.png
 - Один экземпляр: файловый замок `apteka.lock` (std `try_lock`, сам освобождается
   при сбое); второй запуск показывает MessageBoxW и завершается. Релиз собирается
   с `windows_subsystem = "windows"` (без консоли).
-- Автобэкап при старте: `storage::backup()` → `backups/apteka_*.json`, ротация 5 копий.
+- Автобэкап при старте + раз в сутки при первой мутации нового дня
+  (`persist` → `last_backup_date`): `storage::backup()` → `backups/apteka_*.json`,
+  ротация 5 копий.
 - Клавиатура: корневой `FocusScope` + `forward-focus` — ↑/↓ (`move-selection`),
   Ctrl+N/Ctrl+F, Delete (двухшаговое), Escape. Стрелки обрабатываются по `Key.*`.
 - Статусы пересчитываются ежечасно (`slint::Timer` → `refresh_statuses`, только
@@ -63,8 +65,12 @@ docs/screenshot.png
   unsaved; мутации только методами `commit`/`commit_coalesced`/`step_history`)
   + `UiState` в main.rs (selected_id, search, filter/sort, pkg_edit_id,
   pending_photo, photo_cache, cal_*). Граница — чистые функции ядра
-  (`medicine_info`, `initial_selection`, `shopping_list`, `parse_date_input`);
-  ядро не знает про Slint.
+  (`medicine_info`, `initial_selection`, `shopping_list`, `parse_date_input`,
+  `visible_medicines` — поиск/фильтр/сортировка списка); ядро не знает про Slint.
+- Файл данных несёт `version` (`model::DATA_VERSION`); старые JSON без поля
+  читаются (`#[serde(default)]`) и нормализуются в `Database::migrate()` —
+  точка будущих миграций. Повторный импорт CSV не создаёт дублей: пары
+  (имя, форма) без регистра сверяются с базой и внутри файла.
 - Undo/redo: `apteka_core::history::History` — полные снимки `Database`
   (данные — килобайты), стек 50 шагов. Любой мутационный колбэк обязан
   снять `prev = st.domain.db.clone()` ДО мутации и вызвать `commit_history(...)`

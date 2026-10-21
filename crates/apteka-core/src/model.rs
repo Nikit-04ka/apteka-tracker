@@ -123,6 +123,9 @@ pub struct JournalEvent {
 /// Всё, что сохраняется на диск (JSON рядом с exe).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Database {
+    /// Версия схемы файла; `#[serde(default)]` — старые файлы без поля
+    /// читаются как версия 0 и нормализуются при загрузке (см. storage).
+    #[serde(default)]
     pub version: u32,
     /// Порог «истекает скоро» в днях.
     pub warn_days: i32,
@@ -135,10 +138,27 @@ pub struct Database {
     pub events: Vec<JournalEvent>,
 }
 
+/// Текущая версия схемы файла данных. Меняя структуру `Database`,
+/// увеличить и добавить миграцию в `storage::migrate`.
+pub const DATA_VERSION: u32 = 1;
+
+impl Database {
+    /// Миграции схемы: приводит базу любой прочитанной версии к текущей.
+    /// Вызывается после каждой загрузки.
+    pub fn migrate(&mut self) {
+        if self.version == 0 {
+            // файлы до появления явной версии — считаем первой версией
+            self.version = DATA_VERSION;
+        }
+        // будущее: match self.version { 0 => ..., 1 => {} , v => *self.version = DATA_VERSION }
+        self.version = DATA_VERSION;
+    }
+}
+
 impl Default for Database {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: DATA_VERSION,
             warn_days: 60,
             next_med_id: 1,
             next_pkg_id: 1,

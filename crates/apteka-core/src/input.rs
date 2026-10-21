@@ -1,7 +1,10 @@
 //! Чистая логика валидации и расчётов, переносимая из UI: форма упаковки,
 //! календарная сетка, навигация по списку. Не содержит UI-типов.
 
-use crate::model::{parse_date_input, Package};
+use crate::model::{
+    medicine_info, parse_date_input, Database, MedInfo, Medicine, Package, STATUS_EXPIRED,
+    STATUS_SOON,
+};
 use chrono::{Datelike, NaiveDate};
 
 /// Результат валидации формы упаковки.
@@ -115,6 +118,48 @@ impl PackageForm {
     }
 }
 
+/// Отфильтрованный и отсортированный список лекарств для отображения.
+///
+/// Фильтр: `filter_idx` 0 — все, 1 — только «истекает», 2 — только
+/// просроченные. Поиск — без регистра по названию, форме и заметке.
+/// Сортировка: `sort_idx` 0 — по ближайшему сроку (без упаковок — в конец),
+/// иначе — по названию.
+pub fn visible_medicines<'a>(
+    db: &'a Database,
+    search: &str,
+    filter_idx: usize,
+    sort_idx: usize,
+    today: NaiveDate,
+) -> Vec<(&'a Medicine, MedInfo)> {
+    let warn = db.warn_days as i64;
+    let needle = search.trim().to_lowercase();
+    let mut rows: Vec<(&Medicine, MedInfo)> = Vec::new();
+    for m in &db.medicines {
+        if !needle.is_empty() {
+            let hay = format!("{} {} {}", m.name, m.form, m.note).to_lowercase();
+            if !hay.contains(&needle) {
+                continue;
+            }
+        }
+        let info = medicine_info(m, today, warn);
+        if filter_idx == 1 && info.status != STATUS_SOON {
+            continue;
+        }
+        if filter_idx == 2 && info.status != STATUS_EXPIRED {
+            continue;
+        }
+        rows.push((m, info));
+    }
+    match sort_idx {
+        0 => rows.sort_by_key(|(m, info)| {
+            let key = info.nearest.map(|_| info.nearest_days).unwrap_or(i64::MAX);
+            (key, m.name.to_lowercase())
+        }),
+        _ => rows.sort_by_key(|a| a.0.name.to_lowercase()),
+    }
+    rows
+}
+
 /// Индекс в видимой списке после сдвига `delta` от `current`.
 /// None — список пуст. Текущее выделение вне списка: вверх — последняя строка, вниз — первая.
 pub fn move_selection_index(ids: &[i32], current: i32, delta: i32) -> Option<usize> {
@@ -139,7 +184,7 @@ pub fn cal_grid(year: i32, month: u32, today: NaiveDate) -> Option<Vec<Vec<CalCe
     // строк сетки — ровно столько, сколько нужно месяцу (5 или 6)
     let next_month = first + chrono::Months::new(1);
     let days_in_month = (next_month - first).num_days() as u32;
-    let rows_count = (first.weekday().num_days_from_monday() as u32 + days_in_month + 6) / 7;
+    let rows_count = (first.weekday().num_days_from_monday() + days_in_month).div_ceil(7);
     let mut rows = Vec::with_capacity(rows_count as usize);
     for w in 0..rows_count {
         let mut row = Vec::with_capacity(7);
@@ -305,5 +350,119 @@ mod tests {
         // последняя ячейка сетки — 1 ноября, приглушена
         assert_eq!(grid[4][6].0, "1");
         assert!(!grid[4][6].2);
+    }
+
+    fn vm_med(id: i32, name: &str, form: &str, note: &str, in_days: Option<i64>) -> Medicine {
+        let packages = match in_days {
+            None => Vec::new(),
+            Some(n) => vec![Package {
+                id,
+                expiry: d("2026-10-20") + chrono::Duration::days(n),
+                month_only: false,
+                quantity: String::new(),
+                note: String::new(),
+                price: None,
+                opened: None,
+                open_period_days: None,
+                disposed: None,
+                photo: String::new(),
+            }],
+        };
+        Medicine {
+            id,
+            name: name.to_string(),
+            form: form.to_string(),
+            note: note.to_string(),
+            packages,
+        }
+    }
+
+    fn vm_db() -> Database {
+        let mut db = Database {
+            warn_days: 60,
+            ..Default::default()
+        };
+        // 2026-10-20: ОК (через 100 дн.), истекает (30), просрочен (-5)
+        db.medicines
+            .push(vm_med(1, "Парацетамол", "Таблетки", "от головы", Some(100)));
+        db.medicines
+            .push(vm_med(2, "Ибупрофен", "Таблетки", "", Some(30)));
+        db.medicines
+            .push(vm_med(3, "Аспирин", "Шипучий", "аптечка", Some(-5)));
+        db
+    }
+
+    #[test]
+    fn visible_search_is_case_insensitive_across_fields() {
+        let today = d("2026-10-20");
+        let db = vm_db();
+        let names = |v: Vec<(&Medicine, MedInfo)>| -> Vec<String> {
+            v.into_iter().map(|(m, _)| m.name.clone()).collect()
+        };
+        assert_eq!(names(visible_medicines(&db, "", 0, 0, today)).len(), 3);
+        assert_eq!(
+            names(visible_medicines(&db, "пара", 0, 0, today)),
+            vec!["Парацетамол".to_string()],
+            "поиск по названию без регистра"
+        );
+        assert_eq!(
+            names(visible_medicines(&db, "ГОЛОВЫ", 0, 0, today)),
+            vec!["Парацетамол".to_string()],
+            "поиск по заметке"
+        );
+        assert_eq!(
+            names(visible_medicines(&db, "шипуч", 0, 0, today)),
+            vec!["Аспирин".to_string()],
+            "поиск по форме"
+        );
+        assert!(visible_medicines(&db, "мазь", 0, 0, today).is_empty());
+    }
+
+    #[test]
+    fn visible_filter_by_status() {
+        let today = d("2026-10-20");
+        let db = vm_db();
+        let names = |v: Vec<(&Medicine, MedInfo)>| -> Vec<String> {
+            v.into_iter().map(|(m, _)| m.name.clone()).collect()
+        };
+        assert_eq!(
+            names(visible_medicines(&db, "", 1, 0, today)),
+            vec!["Ибупрофен".to_string()],
+            "фильтр «истекает»"
+        );
+        assert_eq!(
+            names(visible_medicines(&db, "", 2, 0, today)),
+            vec!["Аспирин".to_string()],
+            "фильтр «просрочено»"
+        );
+        assert!(
+            visible_medicines(&db, "пара", 1, 0, today).is_empty(),
+            "фильтр + поиск"
+        );
+    }
+
+    #[test]
+    fn visible_sort_by_expiry_then_by_name() {
+        let today = d("2026-10-20");
+        let mut db = Database {
+            warn_days: 60,
+            ..Default::default()
+        };
+        db.medicines.push(vm_med(1, "Бэта", "Т", "", Some(10)));
+        db.medicines.push(vm_med(2, "Альфа", "Т", "", Some(40)));
+        db.medicines.push(vm_med(3, "Вега", "Т", "", None));
+        let order = |v: Vec<(&Medicine, MedInfo)>| -> Vec<String> {
+            v.into_iter().map(|(m, _)| m.name.clone()).collect()
+        };
+        assert_eq!(
+            order(visible_medicines(&db, "", 0, 0, today)),
+            vec!["Бэта", "Альфа", "Вега"],
+            "по сроку; без упаковок — в конец"
+        );
+        assert_eq!(
+            order(visible_medicines(&db, "", 0, 1, today)),
+            vec!["Альфа", "Бэта", "Вега"],
+            "по названию"
+        );
     }
 }

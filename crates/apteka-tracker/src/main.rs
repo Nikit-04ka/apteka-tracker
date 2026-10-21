@@ -3,15 +3,17 @@
 //! Точка входа: загрузка данных, сборка окна Slint, связка колбэков.
 
 use apteka_core::csv;
-use apteka_core::input::{cal_grid, move_selection_index, parse_package_input, PackageForm};
+use apteka_core::input::{
+    cal_grid, move_selection_index, parse_package_input, visible_medicines, PackageForm,
+};
 use apteka_core::model::*;
 use apteka_core::state::{initial_selection, DomainState, EditKind};
 use apteka_core::storage;
 
 use apteka_core::chrono::{Datelike, Local, Months, NaiveDate};
 use slint::{Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
-use std::cell::RefCell;
-use std::collections::HashMap;
+use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 slint::include_modules!();
@@ -129,6 +131,8 @@ struct UiState {
     pending_photo: Option<std::path::PathBuf>,
     /// кэш декодированных фото (имя файла → готовое изображение)
     photo_cache: RefCell<HashMap<String, slint::Image>>,
+    /// день последнего бэкапа (при старте и раз в сутки при первой мутации)
+    last_backup_date: Cell<NaiveDate>,
     /// календарь: отображаемый месяц
     cal_year: i32,
     cal_month: u32,
@@ -204,41 +208,20 @@ fn build_med_row(m: &Medicine, info: &MedInfo) -> MedicineRow {
     }
 }
 
-/// Пересобирает список лекарств с учётом поиска, фильтра и сортировки.
+/// Пересобирает список лекарств с учётом поиска, фильтра и сортировки
+/// (логика — чистая функция ядра `visible_medicines`).
 fn rebuild_list(ui: &AppWindow, st: &UiState) {
-    let t = today();
-    let warn = st.domain.db.warn_days as i64;
-    let needle = st.search.to_lowercase();
-
-    let mut rows: Vec<(i64, String, MedicineRow)> = Vec::new();
-    for m in &st.domain.db.medicines {
-        if !needle.is_empty() {
-            let hay = format!("{} {} {}", m.name, m.form, m.note).to_lowercase();
-            if !hay.contains(&needle) {
-                continue;
-            }
-        }
-        let info = medicine_info(m, t, warn);
-        if st.filter_idx == 1 && info.status != STATUS_SOON {
-            continue;
-        }
-        if st.filter_idx == 2 && info.status != STATUS_EXPIRED {
-            continue;
-        }
-        let sort_key = if info.nearest.is_some() {
-            info.nearest_days
-        } else {
-            i64::MAX
-        };
-        rows.push((sort_key, m.name.to_lowercase(), build_med_row(m, &info)));
-    }
-    match st.sort_idx {
-        0 => rows.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1))),
-        _ => rows.sort_by(|a, b| a.1.cmp(&b.1)),
-    }
-
-    let data: Vec<MedicineRow> = rows.into_iter().map(|(_, _, row)| row).collect();
-    ui.set_medicines(ModelRc::from(Rc::new(VecModel::from(data))));
+    let rows: Vec<MedicineRow> = visible_medicines(
+        &st.domain.db,
+        &st.search,
+        st.filter_idx,
+        st.sort_idx,
+        today(),
+    )
+    .into_iter()
+    .map(|(m, info)| build_med_row(m, &info))
+    .collect();
+    ui.set_medicines(ModelRc::from(Rc::new(VecModel::from(rows))));
 
     ui.set_list_empty_text(SharedString::from(
         if st.search.is_empty() && st.filter_idx == 0 {
@@ -566,6 +549,11 @@ fn reset_delete_armed(ui: &AppWindow) {
 
 /// Сохраняет базу на диск и показывает результат в статусной строке.
 fn persist(ui: &AppWindow, st: &UiState) {
+    // Бэкап раз в сутки: первая мутация нового дня — копия прежнего состояния
+    // до записи. При старте бэкап уже сделан, поэтому до полуночи здесь тихо.
+    if st.last_backup_date.get() != today() && storage::backup().is_ok() {
+        st.last_backup_date.set(today());
+    }
     match storage::save(&st.domain.db) {
         Ok(path) => {
             st.domain.unsaved.set(false);
@@ -702,6 +690,7 @@ fn main() -> Result<(), slint::PlatformError> {
         sort_idx: 0,
         pkg_edit_id: -1,
         photo_cache: RefCell::new(HashMap::new()),
+        last_backup_date: Cell::new(today()),
         pending_photo: None,
         cal_year: Local::now().year(),
         cal_month: Local::now().month(),
@@ -1397,6 +1386,36 @@ fn main() -> Result<(), slint::PlatformError> {
                 return;
             }
             let mut st = s.borrow_mut();
+            // Дедупликация: пара (имя, форма) без регистра — против базы и
+            // внутри самого файла. Повторный импорт того же CSV не плодит дубли.
+            let mut seen: HashSet<(String, String)> = st
+                .domain
+                .db
+                .medicines
+                .iter()
+                .map(|m| (m.name.trim().to_lowercase(), m.form.trim().to_lowercase()))
+                .collect();
+            let mut duplicates = 0usize;
+            meds.retain(|m| {
+                let key = (m.name.trim().to_lowercase(), m.form.trim().to_lowercase());
+                if seen.contains(&key) {
+                    duplicates += 1;
+                    false
+                } else {
+                    seen.insert(key);
+                    true
+                }
+            });
+            drop(seen);
+            if meds.is_empty() {
+                let note = if duplicates > 0 {
+                    format!("Все лекарства из файла уже есть в аптечке (дублей: {duplicates}).")
+                } else {
+                    "В файле нет корректных строк.".to_string()
+                };
+                j.set_note(SharedString::from(note));
+                return;
+            }
             let prev = st.domain.db.clone();
             let mut total_pkgs = 0usize;
             for m in &mut meds {
@@ -1416,9 +1435,14 @@ fn main() -> Result<(), slint::PlatformError> {
             st.selected_id = -1;
             ui.set_selected_id(-1);
             commit_refresh_persist(&ui, &mut st, prev, true);
-            j.set_note(SharedString::from(format!(
-                "Импортировано лекарств: {imported_count} (упаковок: {total_pkgs}, пропущено строк: {skipped})",
-            )));
+            let mut note = format!(
+                "Импортировано лекарств: {imported_count} (упаковок: {total_pkgs}, пропущено строк: {skipped}",
+            );
+            if duplicates > 0 {
+                note.push_str(&format!(", дублей пропущено: {duplicates}"));
+            }
+            note.push(')');
+            j.set_note(SharedString::from(note));
         });
     }
     {

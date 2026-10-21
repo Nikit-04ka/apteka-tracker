@@ -113,7 +113,10 @@ pub fn load_outcome_from(path: &Path) -> LoadOutcome {
         Err(e) => return LoadOutcome::Io(format!("{}: {e}", path.display())),
     };
     match serde_json::from_str::<Database>(&text) {
-        Ok(db) => LoadOutcome::Loaded(db),
+        Ok(mut db) => {
+            db.migrate();
+            LoadOutcome::Loaded(db)
+        }
         Err(e) => {
             let stamp = Local::now().format("%Y%m%d-%H%M%S");
             let backup = PathBuf::from(format!("{}.corrupt-{stamp}", path.to_string_lossy()));
@@ -278,6 +281,30 @@ mod tests {
         let db = load_from(&dir.join("nope.json"));
         assert_eq!(db.warn_days, 60);
         assert!(db.medicines.is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn legacy_json_without_version_is_normalized() {
+        let dir = temp_dir("legacy");
+        let path = dir.join("data.json");
+        // файл старой схемы: без поля version
+        fs::write(
+            &path,
+            r#"{"warn_days": 30, "next_med_id": 2, "next_pkg_id": 1,
+                "medicines": [{"id": 1, "name": "Йод", "form": "Раствор", "note": "",
+                "packages": [{"id": 1, "expiry": "2030-05-01", "quantity": "1 фл.",
+                "note": "", "photo": ""}]}]}"#,
+        )
+        .unwrap();
+        let db = load_from(&path);
+        assert_eq!(
+            db.version,
+            crate::model::DATA_VERSION,
+            "версия нормализована"
+        );
+        assert_eq!(db.warn_days, 30);
+        assert_eq!(db.medicines[0].name, "Йод");
         fs::remove_dir_all(&dir).ok();
     }
 
