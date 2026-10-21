@@ -29,6 +29,11 @@ pub fn backup_dir() -> PathBuf {
     exe_dir().join("backups")
 }
 
+/// Каталог фото упаковок (рядом с exe).
+pub fn photos_dir() -> PathBuf {
+    exe_dir().join("photos")
+}
+
 /// Резервная копия файла данных при запуске; хранятся последние 5 копий.
 pub fn backup() -> io::Result<Option<PathBuf>> {
     backup_from_to(&data_file_path(), &backup_dir(), 5)
@@ -79,6 +84,46 @@ pub fn list_backups() -> Vec<PathBuf> {
     files.sort();
     files.reverse();
     files
+}
+
+/// Удаляет потерянные фото: файлы вида `pkg_*.{png,jpg,jpeg}`, на которые
+/// нет ссылок в базе. Возвращает количество удалённых файлов.
+pub fn cleanup_orphan_photos(db: &Database) -> usize {
+    cleanup_orphan_photos_in(&photos_dir(), db)
+}
+
+/// То же с явным каталогом — для тестов.
+pub fn cleanup_orphan_photos_in(dir: &Path, db: &Database) -> usize {
+    let used: std::collections::HashSet<String> = db
+        .medicines
+        .iter()
+        .flat_map(|m| m.packages.iter())
+        .filter(|p| !p.photo.is_empty())
+        .map(|p| p.photo.clone())
+        .collect();
+    let entries = match fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(_) => return 0,
+    };
+    let mut removed = 0usize;
+    for e in entries.flatten() {
+        let path = e.path();
+        if !path.is_file() {
+            continue;
+        }
+        let name = e.file_name().to_string_lossy().to_string();
+        let ext = path
+            .extension()
+            .and_then(|x| x.to_str())
+            .map(|x| x.to_ascii_lowercase())
+            .unwrap_or_default();
+        let is_app_photo =
+            name.starts_with("pkg_") && matches!(ext.as_str(), "png" | "jpg" | "jpeg");
+        if is_app_photo && !used.contains(&name) && fs::remove_file(&path).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// Загрузка базы со стороны старта приложения: с полной диагностикой.
@@ -281,6 +326,32 @@ mod tests {
         let db = load_from(&dir.join("nope.json"));
         assert_eq!(db.warn_days, 60);
         assert!(db.medicines.is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cleanup_orphan_photos_removes_only_unreferenced() {
+        let dir = temp_dir("photos");
+        let photos = dir.join("photos");
+        fs::create_dir_all(&photos).unwrap();
+        fs::write(photos.join("pkg_1.png"), "a").unwrap();
+        fs::write(photos.join("pkg_9.jpg"), "b").unwrap();
+        fs::write(photos.join("pkg_8.PNG"), "c").unwrap();
+        fs::write(photos.join("notes.txt"), "d").unwrap();
+        let mut db = sample_db();
+        db.medicines[0].packages[0].photo = "pkg_1.png".to_string();
+        let removed = cleanup_orphan_photos_in(&photos, &db);
+        assert_eq!(removed, 2, "удалены только сироты pkg_*");
+        assert!(
+            photos.join("pkg_1.png").exists(),
+            "используемое фото на месте"
+        );
+        assert!(photos.join("notes.txt").exists(), "чужие файлы не тронуты");
+        assert!(!photos.join("pkg_9.jpg").exists());
+        assert!(
+            !photos.join("pkg_8.PNG").exists(),
+            "расширение без регистра"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 

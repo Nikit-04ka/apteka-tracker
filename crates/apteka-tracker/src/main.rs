@@ -273,6 +273,12 @@ fn update_summary(ui: &AppWindow, st: &UiState) {
     ui.set_summary_cost(SharedString::from(format!("Стоимость: {cost:.0} руб.")));
 }
 
+/// Кэш фото привязан к просматриваемым лекарствам; при смене выделения или
+/// замене базы сбрасываем — декод заново по требованию.
+fn clear_photo_cache(st: &UiState) {
+    st.photo_cache.borrow_mut().clear();
+}
+
 /// Пересобирает таблицу упаковок выбранного лекарства (списанные — по флагу).
 fn rebuild_packages(ui: &AppWindow, st: &UiState) {
     let Some(m) = st.selected() else {
@@ -317,20 +323,23 @@ fn rebuild_packages(ui: &AppWindow, st: &UiState) {
             } else {
                 String::new()
             };
-            let photo = if p.photo.is_empty() {
-                slint::Image::default()
+            let (photo, photo_missing) = if p.photo.is_empty() {
+                (slint::Image::default(), false)
             } else {
-                // кэш: фото с диска читается и декодируется один раз
+                // кэш: фото декодируется один раз; неудачные загрузки не
+                // кэшируются — файл может появиться позже
                 let mut cache = st.photo_cache.borrow_mut();
-                if let Some(img) = cache.get(&p.photo) {
-                    img.clone()
-                } else {
-                    let img = slint::Image::load_from_path(
-                        &storage::exe_dir().join("photos").join(&p.photo),
-                    )
-                    .unwrap_or_default();
-                    cache.insert(p.photo.clone(), img.clone());
-                    img
+                match cache.get(&p.photo) {
+                    Some(img) => (img.clone(), false),
+                    None => {
+                        match slint::Image::load_from_path(&storage::photos_dir().join(&p.photo)) {
+                            Ok(img) => {
+                                cache.insert(p.photo.clone(), img.clone());
+                                (img, false)
+                            }
+                            Err(_) => (slint::Image::default(), true),
+                        }
+                    }
                 }
             };
             PackageRow {
@@ -350,6 +359,7 @@ fn rebuild_packages(ui: &AppWindow, st: &UiState) {
                 opened: p.opened.is_some(),
                 disposed: p.is_disposed(),
                 photo,
+                photo_missing,
             }
         })
         .collect();
@@ -422,6 +432,7 @@ fn move_selection(ui: &AppWindow, st: &mut UiState, delta: i32) {
     };
     st.selected_id = ids[new_idx];
     ui.set_selected_id(st.selected_id);
+    clear_photo_cache(st);
     reset_delete_armed(ui);
     update_details(ui, st, true);
 }
@@ -653,6 +664,7 @@ fn history_step(ui: &AppWindow, st: &mut UiState, backwards: bool) {
         st.selected_id = -1;
         ui.set_selected_id(-1);
     }
+    clear_photo_cache(st);
     reset_delete_armed(ui);
     refresh_all(ui, st, true);
     sync_history_ui(ui, st);
@@ -703,6 +715,8 @@ fn main() -> Result<(), slint::PlatformError> {
         Ok(None) => String::new(),
         Err(e) => format!(" · Бэкап не удался: {e}"),
     };
+    // Потерянные фото (pkg_* без ссылок в базе) — мусор от прошлых удалений.
+    storage::cleanup_orphan_photos(&db);
     if !storage::data_file_path().exists() {
         // При первом запуске сразу создаём файл данных рядом с exe
         storage::save(&db).ok();
@@ -799,6 +813,7 @@ fn main() -> Result<(), slint::PlatformError> {
         st.selected_id = id;
         ui.set_selected_id(id);
         ui.set_suggestions(ModelRc::default());
+        clear_photo_cache(&st);
         reset_delete_armed(&ui);
         update_details(&ui, &mut st, true);
     });
@@ -838,6 +853,7 @@ fn main() -> Result<(), slint::PlatformError> {
         }
         st.selected_id = -1;
         ui.set_selected_id(-1);
+        clear_photo_cache(&st);
         reset_delete_armed(&ui);
         commit_refresh_persist(&ui, &mut st, prev, true);
     });
@@ -1025,7 +1041,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 if let Some(src) = st.pending_photo.take() {
                     ui.set_pending_photo(false);
                     if let Some(ext) = src.extension().and_then(|e| e.to_str()) {
-                        let dir = storage::exe_dir().join("photos");
+                        let dir = storage::photos_dir();
                         let _ = std::fs::create_dir_all(&dir);
                         let fname = format!("pkg_{pid}.{ext}");
                         if std::fs::copy(&src, dir.join(&fname)).is_ok() {
@@ -1365,6 +1381,7 @@ fn main() -> Result<(), slint::PlatformError> {
             st.domain.db = db;
             st.selected_id = -1;
             ui.set_selected_id(-1);
+            clear_photo_cache(&st);
             reset_delete_armed(&ui);
             commit_history(&ui, &mut st, prev);
             refresh_all(&ui, &mut st, true);
@@ -1491,6 +1508,7 @@ fn main() -> Result<(), slint::PlatformError> {
             st.domain.db.medicines.append(&mut meds);
             st.selected_id = -1;
             ui.set_selected_id(-1);
+            clear_photo_cache(&st);
             commit_refresh_persist(&ui, &mut st, prev, true);
             let mut note = format!(
                 "Импортировано лекарств: {imported_count} (упаковок: {total_pkgs}, пропущено строк: {skipped}",
@@ -1538,7 +1556,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     .and_then(|e| e.to_str())
                     .map(|e| e.to_lowercase())
                     .unwrap_or_else(|| "png".into());
-                let dir = storage::exe_dir().join("photos");
+                let dir = storage::photos_dir();
                 if let Err(e) = std::fs::create_dir_all(&dir) {
                     ui.set_status_message(SharedString::from(format!(
                         "Не удалось создать папку photos: {e}"

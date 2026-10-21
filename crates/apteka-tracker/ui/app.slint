@@ -30,6 +30,8 @@ export struct PackageRow {
     opened: bool,
     disposed: bool,
     photo: image,
+    // файл фото указан, но не читается — показываем плейсхолдер
+    photo-missing: bool,
 }
 
 // Ячейка календаря и строка календарной сетки
@@ -777,6 +779,22 @@ export component AppWindow inherits Window {
                                                 width: 52px;
                                                 height: 58px;
                                                 image-fit: contain;
+                                            }
+                                            if (p.photo-missing): Rectangle {
+                                                width: 52px;
+                                                height: 58px;
+                                                border-radius: 6px;
+                                                background: Theme.panel;
+                                                border-width: 1px;
+                                                border-color: Theme.hairline;
+                                                Text {
+                                                    width: 100%;
+                                                    text: "фото\nнедоступно";
+                                                    font-size: 9px;
+                                                    color: Theme.muted;
+                                                    horizontal-alignment: center;
+                                                    vertical-alignment: center;
+                                                }
                                             }
                                             VerticalLayout {
                                                 spacing: 3px;
