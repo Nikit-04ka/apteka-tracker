@@ -1,9 +1,6 @@
 //! Хранение и загрузка данных: JSON рядом с exe (портативный режим) и экспорт/импорт CSV.
 
-use crate::model::{
-    days_left, dispose_reason_text, fmt_date, fmt_date_display, parse_date_input, status_for,
-    status_text, Database, Medicine, Package, STATUS_DISPOSED,
-};
+use crate::model::Database;
 use chrono::Local;
 use std::fs;
 use std::io::{self, Write};
@@ -480,21 +477,6 @@ mod tests {
         fs::remove_dir_all(&dir).ok();
     }
 
-    #[test]
-    fn csv_export_contains_all_rows() {
-        let dir = temp_dir("csv");
-        let path = dir.join("export.csv");
-        let db = sample_db();
-        export_csv_to(&db, &path).unwrap();
-        let text = fs::read_to_string(&path).unwrap();
-        assert!(text.starts_with('\u{FEFF}'), "нужен BOM для Excel");
-        assert!(text.contains("\"Парацетамол \"\"Тева\"\"\""), "кавычки экранируются");
-        assert!(text.contains("01.01.2030"));
-        assert!(text.contains("350.00"), "цена попадает в CSV");
-        assert!(text.contains("01.2028 (до конца мес.)"), "месячный срок помечается в CSV");
-        assert!(text.contains("в ящике"));
-        fs::remove_dir_all(&dir).ok();
-    }
 
     #[test]
     fn backup_copies_data_file() {

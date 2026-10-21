@@ -4,6 +4,7 @@
 
 use apteka_core::history::History;
 use apteka_core::input::{cal_grid, move_selection_index, parse_package_input};
+use apteka_core::csv;
 use apteka_core::model::*;
 use apteka_core::storage;
 
@@ -1174,15 +1175,14 @@ fn main() -> Result<(), slint::PlatformError> {
         ui.on_export_csv(move || {
             let ui = h.unwrap();
             let st = s.borrow();
-            match storage::export_csv(&st.db) {
-                Ok(path) => ui.set_status_message(SharedString::from(format!(
-                    "Экспортировано: {}",
-                    path.display()
-                ))),
-                Err(e) => {
-                    ui.set_status_message(SharedString::from(format!("Ошибка экспорта: {e}")))
-                }
-            }
+            let Ok(exported) = csv::export_csv(&st.db) else {
+                ui.set_status_message(SharedString::from("Ошибка экспорта"));
+                return;
+            };
+            ui.set_status_message(SharedString::from(format!(
+                "Экспортировано: {}",
+                exported.display()
+            )));
         });
     }
 
@@ -1573,7 +1573,7 @@ fn main() -> Result<(), slint::PlatformError> {
             let ui = h.unwrap();
             let j = jh.unwrap();
             let Some(path) = files.borrow().get(idx as usize).cloned() else { return };
-            let (mut meds, skipped) = match storage::import_csv(&path) {
+            let (mut meds, skipped) = match csv::import_csv(&path) {
                 Ok(r) => r,
                 Err(e) => {
                     j.set_note(SharedString::from(format!("Ошибка чтения: {e}")));
