@@ -1,6 +1,10 @@
 /target
+/bin/
 *.json.tmp
 apteka_data.json
 apteka_export.csv
+apteka_crash.log
+settings.json
+photos/
 apteka.lock
 backups/
