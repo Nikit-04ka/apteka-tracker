@@ -482,7 +482,10 @@ mod tests {
         let blocker = dir.join("apteka_data.json");
         fs::write(&blocker, "ценные данные").unwrap();
         let bad = blocker.join("child.json"); // родитель — файл
-        assert!(save_to(&sample_db(), &bad).is_err(), "ошибка записи возвращается");
+        assert!(
+            save_to(&sample_db(), &bad).is_err(),
+            "ошибка записи возвращается"
+        );
         assert_eq!(
             fs::read_to_string(&blocker).unwrap(),
             "ценные данные",

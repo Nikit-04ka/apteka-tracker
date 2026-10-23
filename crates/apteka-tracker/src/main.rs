@@ -403,11 +403,11 @@ mod tests {
     fn panic_entry_contains_all_parts() {
         let e = panic_log_entry(
             "2026-10-21 12:00:00",
-            "1.2.0",
+            "1.3.0",
             "index out of bounds",
             "src/main.rs:10:5",
         );
-        assert!(e.contains("=== 2026-10-21 12:00:00 · v1.2.0 ==="));
+        assert!(e.contains("=== 2026-10-21 12:00:00 · v1.3.0 ==="));
         assert!(e.contains("panic: index out of bounds"));
         assert!(e.contains("at src/main.rs:10:5"));
     }
