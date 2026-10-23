@@ -7,7 +7,8 @@ import { Button, ComboBox, LineEdit, ListView, SpinBox, TextEdit, Palette } from
 // Палитра экспортируется в Rust: применение сохранённой темы при старте.
 export { Palette }
 
-// Строка списка лекарств. status: 0 = годен, 1 = истекает, 2 = просрочено, 3 = нет упаковок
+// Строка списка лекарств. status: 0 = годен, 1 = истекает, 2 = просрочено,
+// 3 = нет упаковок, 4 = списано (коды — model.rs, маппинг — StatusTheme)
 export struct MedicineRow {
     id: int,
     name: string,
@@ -76,16 +77,47 @@ export global Theme {
     in-out property <color> hover: Palette.color-scheme == ColorScheme.dark ? rgba(255, 255, 255, 0.06) : rgba(15, 23, 42, 0.045);
 }
 
+// Единая точка маппинга кодов статуса в цвета темы. Коды — из model.rs:
+// 0 — годен, 1 — истекает, 2 — просрочено, 3 — нет упаковок, 4 — списано.
+global StatusTheme {
+    public pure function row-status(disposed: bool, status: int) -> int {
+        return disposed ? 4 : status;
+    }
+    public pure function base(status: int) -> color {
+        return status == 2 ? Theme.danger
+            : status == 1 ? Theme.warn
+            : status == 0 ? Theme.ok
+            : Theme.muted;
+    }
+    public pure function tint(status: int) -> color {
+        return status == 2 ? Theme.danger-tint
+            : status == 1 ? Theme.warn-tint
+            : status == 0 ? Theme.accent-tint-soft
+            : Theme.panel;
+    }
+    public pure function text(status: int) -> color {
+        return status == 2 ? Theme.danger-text
+            : status == 1 ? Theme.warn-text
+            : status == 0 ? Theme.ok-text
+            : Theme.muted;
+    }
+    public pure function alert-tint(status: int) -> color {
+        return status == 2 ? Theme.danger-tint
+            : status == 1 ? Theme.warn-tint
+            : transparent;
+    }
+    public pure function is-alert(status: int) -> bool {
+        return status == 2 || status == 1;
+    }
+}
+
 // Точка-индикатор статуса
 component StatusDot inherits Rectangle {
     in property <int> status: 0;
     width: 10px;
     height: 10px;
     border-radius: 5px;
-    background: root.status == 2 ? Theme.danger
-        : root.status == 1 ? Theme.warn
-        : root.status == 0 ? Theme.ok
-        : Theme.muted;
+    background: StatusTheme.base(root.status);
 }
 
 // Бейдж-пилюля: цветной фон + точка + короткий текст («12 дн.», «−45 дн.», «списано»)
@@ -95,10 +127,7 @@ component Badge inherits Rectangle {
     height: 22px;
     horizontal-stretch: 0;
     border-radius: 11px;
-    background: root.status == 2 ? Theme.danger-tint
-        : root.status == 1 ? Theme.warn-tint
-        : root.status == 0 ? Theme.accent-tint-soft
-        : Theme.panel;
+    background: StatusTheme.tint(root.status);
     HorizontalLayout {
         padding-left: 9px;
         padding-right: 9px;
@@ -110,20 +139,14 @@ component Badge inherits Rectangle {
                 width: 6px;
                 height: 6px;
                 border-radius: 3px;
-                background: root.status == 2 ? Theme.danger
-                    : root.status == 1 ? Theme.warn
-                    : root.status == 0 ? Theme.ok
-                    : Theme.muted;
+                background: StatusTheme.base(root.status);
             }
         }
         Text {
             text: root.text;
             font-size: 11px;
             font-weight: 700;
-            color: root.status == 2 ? Theme.danger-text
-                : root.status == 1 ? Theme.warn-text
-                : root.status == 0 ? Theme.ok-text
-                : Theme.muted;
+            color: StatusTheme.text(root.status);
             vertical-alignment: center;
         }
     }
@@ -247,12 +270,9 @@ component MedRow inherits Rectangle {
     border-radius: 8px;
     border-width: root.selected ? 2px : 1px;
     border-color: root.selected ? Theme.accent
-        : root.data.status == 2 ? Theme.danger-tint
-        : root.data.status == 1 ? Theme.warn-tint
-        : transparent;
+        : StatusTheme.alert-tint(root.data.status);
     background: root.selected ? Theme.accent-tint
-        : root.data.status == 2 ? Theme.danger-tint
-        : root.data.status == 1 ? Theme.warn-tint
+        : StatusTheme.is-alert(root.data.status) ? StatusTheme.alert-tint(root.data.status)
         : ta.has-hover ? Theme.hover
         : transparent;
     animate background { duration: 100ms; easing: ease-out; }
@@ -380,7 +400,6 @@ export component AppWindow inherits Window {
     callback open-reports();
     callback open-backups();
     callback open-import();
-    callback import-csv(int);
     callback pick-photo();
     callback suggestion-picked(string);
     callback cal-month-opened();
@@ -390,6 +409,7 @@ export component AppWindow inherits Window {
     callback pkg-save();
     callback pkg-cancel-edit();
     callback pkg-expiry-edited(string);
+    callback pkg-form-edited();
     callback pkg-quick(int);
     callback export-csv();
     callback move-selection(int);
@@ -458,9 +478,12 @@ export component AppWindow inherits Window {
                 }
                 accept
             } else if (event.text == Key.Escape) {
+                // Escape отменяет всё взведённое: и правку упаковки, и
+                // подтверждение удаления лекарства
                 if (root.pkg-editing) {
                     root.pkg-cancel-edit();
-                } else if (root.delete-armed) {
+                }
+                if (root.delete-armed) {
                     root.delete-armed = false;
                     root.delete-btn-text = "Удалить лекарство";
                 }
@@ -796,7 +819,7 @@ export component AppWindow inherits Window {
                                             VerticalLayout {
                                                 width: 10px;
                                                 alignment: center;
-                                                StatusDot { status: p.disposed ? 4 : p.status; }
+                                                StatusDot { status: StatusTheme.row-status(p.disposed, p.status); }
                                             }
                                             if (p.photo.width > 0): Image {
                                                 source: p.photo;
@@ -847,7 +870,7 @@ export component AppWindow inherits Window {
                                                         color: Theme.muted;
                                                     }
                                                     Badge {
-                                                        status: p.disposed ? 4 : p.status;
+                                                        status: StatusTheme.row-status(p.disposed, p.status);
                                                         text: p.days-text;
                                                     }
                                                 }
@@ -880,12 +903,14 @@ export component AppWindow inherits Window {
                                                         label: "Израсходовано";
                                                         clicked => { root.pkg-dispose(p.id, 0); }
                                                     }
-                                                    if (!p.disposed && p.opened): GhostButton {
+                                                    // выбросить можно и запечатанную
+                                                    // (например, просроченную) пачку
+                                                    if (!p.disposed): GhostButton {
                                                         label: "Выбросить";
                                                         danger: true;
                                                         clicked => { root.pkg-dispose(p.id, 1); }
                                                     }
-                                                    if (!p.disposed && !p.opened): GhostButton {
+                                                    if (!p.disposed): GhostButton {
                                                         label: "Клонировать";
                                                         clicked => { root.pkg-clone(p.id); }
                                                     }
@@ -958,7 +983,7 @@ export component AppWindow inherits Window {
                                         expiry-edit := LineEdit {
                                             width: 200px;
                                             text <=> root.pkg-expiry;
-                                            placeholder-text: "ГГГГ-ММ-ДД или ММ.ГГГГ";
+                                            placeholder-text: "ГГГГ-ММ-ДД, ДД.ММ.ГГГГ или ММ.ГГГГ";
                                             edited(text) => { root.pkg-expiry-edited(text); }
                                         }
                                         GhostButton {
@@ -1063,6 +1088,7 @@ export component AppWindow inherits Window {
                                     LineEdit {
                                         text <=> root.pkg-price;
                                         placeholder-text: "напр. 350";
+                                        edited(text) => { root.pkg-form-edited(); }
                                     }
                                 }
                                 VerticalLayout {
@@ -1072,6 +1098,7 @@ export component AppWindow inherits Window {
                                     LineEdit {
                                         text <=> root.pkg-period;
                                         placeholder-text: "напр. 30";
+                                        edited(text) => { root.pkg-form-edited(); }
                                     }
                                 }
                                 VerticalLayout {
@@ -1081,6 +1108,7 @@ export component AppWindow inherits Window {
                                     LineEdit {
                                         text <=> root.pkg-purchase-date;
                                         placeholder-text: "необязательно";
+                                        edited(text) => { root.pkg-form-edited(); }
                                     }
                                 }
                                 VerticalLayout {
@@ -1106,7 +1134,6 @@ export component AppWindow inherits Window {
                                 spacing: 8px;
                                 GhostButton {
                                     label: "Фото…";
-                                    enabled: root.pkg-editing;
                                     clicked => { root.pick-photo(); }
                                 }
                                 Text {
@@ -1140,6 +1167,16 @@ export component AppWindow inherits Window {
                             }
                         }
                     }
+                }
+
+                // клик вне попапа автодополнения закрывает его — иначе он
+                // перекрывает поля формы и перехватывает клики
+                if (root.has-selection && root.suggestions.length > 0): TouchArea {
+                    x: 0;
+                    y: 88px;
+                    width: parent.width;
+                    height: parent.height - 88px;
+                    clicked => { root.suggestions = []; }
                 }
 
                 if (root.has-selection && root.suggestions.length > 0): Rectangle {
@@ -1251,7 +1288,7 @@ export component AppWindow inherits Window {
                 vertical-alignment: center;
                 overflow: elide;
                 horizontal-stretch: 2;
-                color: Theme.muted;
+                color: root.save-error ? Theme.danger-text : Theme.muted;
             }
         }
         }
@@ -1594,7 +1631,7 @@ export component ImportWindow inherits Window {
         spacing: 8px;
 
         Text {
-            text: "Импорт понимает файлы экспорта этой программы (разделитель «;»). Выберите CSV-файл рядом с программой. Данные будут добавлены к существующим. Жизненный цикл (вскрытие/списание) и фото не переносятся — импортируются запечатанные упаковки.";
+            text: "Импорт понимает файлы экспорта этой программы (разделитель «;»). Выберите CSV-файл рядом с программой. Данные добавятся к существующим; лекарства с такой парой «название + форма» пропускаются, поэтому повторный импорт не создаёт дублей. Жизненный цикл упаковок (вскрытие, период после вскрытия, списание) переносится; фото не переносятся.";
             wrap: word-wrap;
             font-size: 12px;
             color: Theme.muted;
