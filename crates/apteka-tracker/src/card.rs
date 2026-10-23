@@ -13,12 +13,15 @@ use crate::ui_sync::*;
 use crate::with_state;
 use crate::*;
 
-/// Уникальное имя файла фото упаковки: `pkg_<id>-<метка>.<ext>`. Метка времени
-/// делает имя новым при каждом прикреплении: замена фото не перезаписывает
+/// Уникальное имя файла фото упаковки: `pkg_<id>-<метка>-<счётчик>.<ext>`.
+/// Метка времени плюс счётчик процесса делают имя новым при каждом
+/// прикреплении (даже в одну миллисекунду): замена фото не перезаписывает
 /// прежний файл, поэтому Ctrl+Z реально возвращает старый снимок (F3).
 pub(crate) fn unique_photo_name(pid: i32, ext: &str) -> String {
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let stamp = Local::now().format("%Y%m%d-%H%M%S-%3f");
-    format!("pkg_{pid}-{stamp}.{ext}")
+    format!("pkg_{pid}-{stamp}-{n:03}.{ext}")
 }
 
 /// Копирует выбранный файл в каталог `photos/` под уникальным именем.
@@ -47,6 +50,21 @@ pub(crate) fn copy_photo_to_store_in(
     Ok(fname)
 }
 
+/// Нетронутое «Новое лекарство» от прошлых кликов «+ Добавить»: без упаковок,
+/// заметок и категорий. Повторный клик открывает его, а не плодит пустышки.
+pub(crate) fn empty_placeholder_id(db: &Database) -> Option<i32> {
+    db.medicines
+        .iter()
+        .find(|m| {
+            m.name == "Новое лекарство"
+                && m.form == FORMS[0]
+                && m.note.is_empty()
+                && m.tags.is_empty()
+                && m.packages.is_empty()
+        })
+        .map(|m| m.id)
+}
+
 /// Регистрирует колбэки карточки лекарства: выбор, добавление/удаление,
 /// правки полей (имя/заметки/категории/форма), фильтры списка и порог (F6).
 pub(crate) fn register_card_cbs(
@@ -64,6 +82,25 @@ pub(crate) fn register_card_cbs(
     });
 
     with_state!(ui, state, on_add_medicine, |ui, mut st| {
+        // повторные клики не плодят пустышки: пока в базе есть нетронутое
+        // «Новое лекарство» — открываем его вместо создания нового
+        if let Some(id) = empty_placeholder_id(&st.domain.db) {
+            st.selected_id = id;
+            st.search.clear();
+            st.filter_idx = 0;
+            st.tag_filter = None;
+            st.pending_photo = None;
+            ui.set_pending_photo(false);
+            ui.set_search_text(SharedString::new());
+            ui.set_filter_index(0);
+            ui.set_selected_id(id);
+            reset_view_flags(&ui);
+            refresh_all(&ui, &mut st, true);
+            ui.set_status_message(SharedString::from(
+                "Уже есть пустое «Новое лекарство» — открываем его",
+            ));
+            return;
+        }
         let prev = st.domain.db.clone();
         let id = st.domain.db.new_med_id();
         st.domain.db.medicines.push(Medicine {
@@ -238,8 +275,9 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let src = dir.join("src.png");
         std::fs::write(&src, b"v1").unwrap();
+        // имена уникальны даже в одну миллисекунду — без пауз
+        assert_ne!(unique_photo_name(7, "png"), unique_photo_name(7, "png"));
         let f1 = copy_photo_to_store_in(&dir, &src, 7).unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(5));
         std::fs::write(&src, b"v2").unwrap();
         let f2 = copy_photo_to_store_in(&dir, &src, 7).unwrap();
         assert_ne!(f1, f2, "каждое сохранение — новое имя файла");
@@ -250,5 +288,26 @@ mod tests {
         );
         assert_eq!(std::fs::read(dir.join(&f2)).unwrap(), b"v2".to_vec());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn empty_placeholder_is_reused_not_duplicated() {
+        // повторный клик «+ Добавить» находит нетронутое «Новое лекарство»,
+        // а не создаёт второе
+        let mut db = Database::default();
+        assert_eq!(empty_placeholder_id(&db), None);
+        let id = db.new_med_id();
+        db.medicines.push(Medicine {
+            id,
+            name: "Новое лекарство".to_string(),
+            form: FORMS[0].to_string(),
+            note: String::new(),
+            tags: Vec::new(),
+            packages: Vec::new(),
+        });
+        assert_eq!(empty_placeholder_id(&db), Some(id));
+        // заполненная запись с тем же именем — уже не плейсхолдер
+        db.medicines[0].note = "реальная заметка".to_string();
+        assert_eq!(empty_placeholder_id(&db), None);
     }
 }

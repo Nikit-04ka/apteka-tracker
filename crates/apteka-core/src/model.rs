@@ -86,10 +86,15 @@ impl Package {
 
     /// Реальный срок годности: заводской, а при вскрытии с периодом —
     /// более ранний из «заводского» и «вскрытие + период».
+    ///
+    /// Не паникует при переполнении даты: мусорный `open_period_days` из
+    /// рукописного JSON отбрасывается, остаётся заводской срок.
     pub fn effective_expiry(&self) -> NaiveDate {
         match (self.opened, self.open_period_days) {
             (Some(opened), Some(days)) => {
-                let after_open = opened + chrono::Duration::days(days as i64);
+                let after_open = opened
+                    .checked_add_signed(chrono::Duration::days(days as i64))
+                    .unwrap_or(self.expiry);
                 if after_open < self.expiry {
                     after_open
                 } else {
@@ -150,9 +155,13 @@ pub struct Database {
     /// читаются как версия 0 и нормализуются при загрузке (см. storage).
     #[serde(default)]
     pub version: u32,
-    /// Порог «истекает скоро» в днях.
+    /// Порог «истекает скоро» в днях. `#[serde(default)]` — частично
+    /// отредактированный вручную JSON без поля не считается повреждённым.
+    #[serde(default = "default_warn_days")]
     pub warn_days: i32,
+    #[serde(default)]
     pub next_med_id: i32,
+    #[serde(default)]
     pub next_pkg_id: i32,
     #[serde(default)]
     pub medicines: Vec<Medicine>,
@@ -162,19 +171,64 @@ pub struct Database {
 }
 
 /// Текущая версия схемы файла данных. Меняя структуру `Database`,
-/// увеличить и добавить миграцию в `storage::migrate`.
+/// увеличить и добавить миграцию в `Database::migrate`.
 pub const DATA_VERSION: u32 = 1;
+
+/// Значение порога по умолчанию для `#[serde(default)]`.
+fn default_warn_days() -> i32 {
+    60
+}
 
 impl Database {
     /// Миграции схемы: приводит базу любой прочитанной версии к текущей.
-    /// Вызывается после каждой загрузки.
+    /// Вызывается после каждой загрузки. Версия новее текущей не прижимается:
+    /// файл из более новой программы не должен молча записаться как текущая.
+    ///
+    /// Помимо версии нормализует значения, которые рукописный или старый JSON
+    /// мог испортить так, что расчёты паникуют или теряют ссылки: счётчики id,
+    /// период после вскрытия и имя файла фото.
     pub fn migrate(&mut self) {
-        if self.version == 0 {
-            // файлы до появления явной версии — считаем первой версией
+        // version == 0 — файлы до появления явной версии, считаем первой
+        if self.version < DATA_VERSION {
             self.version = DATA_VERSION;
         }
-        // будущее: match self.version { 0 => ..., 1 => {} , v => *self.version = DATA_VERSION }
-        self.version = DATA_VERSION;
+        // Порог не должен выводить статусы из разумного диапазона (5..=365 —
+        // как в SpinBox интерфейса).
+        self.warn_days = self.warn_days.clamp(5, 365);
+        // Период после вскрытия вне 0..=3650 — мусор: переполнил бы дату.
+        for m in &mut self.medicines {
+            for p in &mut m.packages {
+                if let Some(days) = p.open_period_days {
+                    if !(0..=3650).contains(&days) {
+                        p.open_period_days = None;
+                    }
+                }
+                // Имя файла фото — только имя: путь с разделителями или «..»
+                // позволил бы читать файлы вне каталога photos/.
+                if !p.photo.is_empty() {
+                    p.photo = std::path::Path::new(&p.photo)
+                        .file_name()
+                        .map(|s| s.to_string_lossy().into_owned())
+                        .unwrap_or_default();
+                }
+            }
+        }
+        // Счётчики id — всегда впереди максимального существующего: иначе новая
+        // запись получит занятый id и данные переплетутся.
+        let max_med = self.medicines.iter().map(|m| m.id).max().unwrap_or(0);
+        if self.next_med_id <= max_med {
+            self.next_med_id = max_med + 1;
+        }
+        let max_pkg = self
+            .medicines
+            .iter()
+            .flat_map(|m| m.packages.iter())
+            .map(|p| p.id)
+            .max()
+            .unwrap_or(0);
+        if self.next_pkg_id <= max_pkg {
+            self.next_pkg_id = max_pkg + 1;
+        }
     }
 }
 
@@ -249,7 +303,12 @@ pub fn parse_date_input(s: &str) -> Option<(NaiveDate, bool)> {
     }
     for fmt in ["%Y-%m-%d", "%d.%m.%Y"] {
         if let Ok(d) = NaiveDate::parse_from_str(s, fmt) {
-            return Some((d, false));
+            // год вне разумного диапазона не принимаем — как и для «ММ.ГГГГ»:
+            // «28.02.30» не должно прочитываться как 30 год
+            if (1900..=2200).contains(&d.year()) {
+                return Some((d, false));
+            }
+            return None;
         }
     }
     // Только месяц и год: нормализуем разделители -, /, пробел в точку.
@@ -350,24 +409,36 @@ pub fn days_short(status: i32, days: i64) -> String {
     }
 }
 
-/// Годовая сводка: количество упаковок и денежная сумма.
+/// Годовая сводка: количество упаковок и денежная сумма. `unpriced` — сколько
+/// упаковок учтено в `count`, но не в `sum` (цена не указана): иначе строка
+/// «2 уп. · 0.00 руб.» выглядит как потеря данных.
 #[derive(Debug, Clone, PartialEq)]
 pub struct YearSum {
     pub year: i32,
     pub count: usize,
     pub sum: f64,
+    pub unpriced: usize,
 }
 
-fn by_year(items: impl Iterator<Item = (i32, f64)>) -> Vec<YearSum> {
-    let mut acc: std::collections::HashMap<i32, (usize, f64)> = std::collections::HashMap::new();
+fn by_year(items: impl Iterator<Item = (i32, Option<f64>)>) -> Vec<YearSum> {
+    let mut acc: std::collections::HashMap<i32, (usize, f64, usize)> =
+        std::collections::HashMap::new();
     for (year, price) in items {
-        let e = acc.entry(year).or_insert((0, 0.0));
+        let e = acc.entry(year).or_insert((0, 0.0, 0));
         e.0 += 1;
-        e.1 += price;
+        match price {
+            Some(p) => e.1 += p,
+            None => e.2 += 1,
+        }
     }
     let mut out: Vec<YearSum> = acc
         .into_iter()
-        .map(|(year, (count, sum))| YearSum { year, count, sum })
+        .map(|(year, (count, sum, unpriced))| YearSum {
+            year,
+            count,
+            sum,
+            unpriced,
+        })
         .collect();
     out.sort_by_key(|r| std::cmp::Reverse(r.year));
     out
@@ -380,7 +451,7 @@ pub fn purchases_by_year(db: &Database) -> Vec<YearSum> {
         db.medicines
             .iter()
             .flat_map(|m| m.packages.iter())
-            .filter_map(|p| p.purchase_date.map(|d| (d.year(), p.price.unwrap_or(0.0)))),
+            .filter_map(|p| p.purchase_date.map(|d| (d.year(), p.price))),
     )
 }
 
@@ -390,22 +461,23 @@ pub fn disposals_by_year(db: &Database) -> Vec<YearSum> {
         db.medicines
             .iter()
             .flat_map(|m| m.packages.iter())
-            .filter_map(|p| {
-                p.disposed
-                    .as_ref()
-                    .map(|d| (d.date.year(), p.price.unwrap_or(0.0)))
-            }),
+            .filter_map(|p| p.disposed.as_ref().map(|d| (d.date.year(), p.price))),
     )
 }
 
-/// Самая ранняя дата годности среди активных (не списанных) упаковок.
-pub fn oldest_active_expiry(db: &Database) -> Option<NaiveDate> {
+/// Самая ранняя активная (не списанная) упаковка — например, для отчётов,
+/// где важен и формат показа срока (`month_only`).
+pub fn oldest_active_package(db: &Database) -> Option<&Package> {
     db.medicines
         .iter()
         .flat_map(|m| m.packages.iter())
         .filter(|p| !p.is_disposed())
-        .map(|p| p.effective_expiry())
-        .min()
+        .min_by_key(|p| p.effective_expiry())
+}
+
+/// Самая ранняя дата годности среди активных (не списанных) упаковок.
+pub fn oldest_active_expiry(db: &Database) -> Option<NaiveDate> {
+    oldest_active_package(db).map(|p| p.effective_expiry())
 }
 
 /// Строки «списка покупок»: активные упаковки, которые просрочены
@@ -417,7 +489,8 @@ pub fn shopping_list(db: &Database, today: NaiveDate) -> Vec<String> {
             if p.is_disposed() {
                 continue;
             }
-            let days = days_left(p.effective_expiry(), today);
+            let eff = p.effective_expiry();
+            let days = days_left(eff, today);
             if days > db.warn_days as i64 {
                 continue;
             }
@@ -442,7 +515,7 @@ pub fn shopping_list(db: &Database, today: NaiveDate) -> Vec<String> {
                     &p.quantity
                 },
                 when,
-                fmt_date_display(p.effective_expiry(), p.month_only && p.opened.is_none()),
+                fmt_date_display(eff, p.month_only && eff == p.expiry),
             ));
         }
     }
@@ -541,6 +614,21 @@ mod tests {
     fn month_display_shows_mm_yyyy() {
         assert_eq!(fmt_date_display(d("2028-01-31"), true), "01.2028");
         assert_eq!(fmt_date_display(d("2028-01-31"), false), "31.01.2028");
+    }
+
+    #[test]
+    fn display_roundtrip_preserves_month_only() {
+        // предзаполнение формы редактирования: parse от отображённой строки
+        // обязан вернуть ту же дату и тот же флаг
+        let dd = d("2028-01-31");
+        assert_eq!(
+            parse_date_input(&fmt_date_display(dd, true)),
+            Some((dd, true))
+        );
+        assert_eq!(
+            parse_date_input(&fmt_date_display(dd, false)),
+            Some((dd, false))
+        );
     }
 
     #[test]
@@ -731,6 +819,40 @@ mod tests {
     }
 
     #[test]
+    fn shopping_list_month_display_matches_medicine_info() {
+        // «ММ.ГГГГ» — пока действует заводской месячный срок; после вскрытия
+        // с периодом эффективная дата не конец месяца — полная дата
+        let mut db = Database {
+            warn_days: 60,
+            ..Default::default()
+        };
+        let today = d("2026-10-20");
+        // обе упаковки истекают в пределах порога (30..41 дн.), иначе список
+        // покупок их не показывает
+        let mut sealed = pkg(1, end_of_month(2026, 11), true);
+        sealed.quantity = "1 уп.".to_string();
+        let mut opened = pkg(2, end_of_month(2026, 11), true);
+        opened.quantity = "1 фл.".to_string();
+        opened.opened = Some(today);
+        opened.open_period_days = Some(30);
+        db.medicines.push(Medicine {
+            id: 1,
+            name: "Тест".to_string(),
+            form: String::new(),
+            note: String::new(),
+            tags: Vec::new(),
+            packages: vec![sealed, opened],
+        });
+        let rows = shopping_list(&db, today);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].contains("11.2026"), "запечатанная: месяц без дня");
+        assert!(
+            rows[1].contains("19.11.2026"),
+            "вскрытая: полная дата эффективного срока"
+        );
+    }
+
+    #[test]
     fn database_ids_increment() {
         let mut db = Database::default();
         assert_eq!(db.new_med_id(), 1);
@@ -804,6 +926,27 @@ mod tests {
     }
 
     #[test]
+    fn year_reports_count_unpriced_packages_separately() {
+        // упаковка с датой покупки, но без цены: в количестве есть, в сумме —
+        // нет, и сводка это честно показывает («без цены»), а не «0.00 руб.»
+        let mut db = Database::default();
+        let dd = |y: i32, m: u32, d: u32| NaiveDate::from_ymd_opt(y, m, d).unwrap();
+        db.medicines.push(Medicine {
+            id: 0,
+            name: String::new(),
+            form: String::new(),
+            note: String::new(),
+            tags: Vec::new(),
+            packages: vec![priced_pkg(dd(2030, 1, 1), None, Some(dd(2025, 5, 1)), None)],
+        });
+        let purchases = purchases_by_year(&db);
+        assert_eq!(purchases.len(), 1);
+        assert_eq!(purchases[0].count, 1);
+        assert_eq!(purchases[0].sum, 0.0);
+        assert_eq!(purchases[0].unpriced, 1);
+    }
+
+    #[test]
     fn parse_tags_splits_and_dedups() {
         assert_eq!(
             parse_tags(" жаропонижающее ,  детское;"),
@@ -816,5 +959,126 @@ mod tests {
         );
         assert_eq!(parse_tags(" , ;"), Vec::<String>::new());
         assert_eq!(parse_tags("одно"), vec!["одно"]);
+    }
+
+    #[test]
+    fn full_dates_reject_years_out_of_range() {
+        // год вне 1900..=2200 не принимается и для полных дат — как и для «ММ.ГГГГ»
+        assert_eq!(parse_date_input("28.02.30"), None);
+        assert_eq!(parse_date_input("01.01.2500"), None);
+        assert_eq!(parse_date_input("01.01.1899"), None);
+        assert_eq!(
+            parse_date_input("31.12.2026"),
+            Some((d("2026-12-31"), false)),
+            "обычные даты работают как раньше"
+        );
+    }
+
+    #[test]
+    fn migrate_keeps_future_version_and_normalizes_legacy() {
+        let mut legacy = Database {
+            version: 0,
+            ..Default::default()
+        };
+        legacy.migrate();
+        assert_eq!(legacy.version, DATA_VERSION, "файл без версии — текущая");
+
+        let mut future = Database {
+            version: DATA_VERSION + 7,
+            ..Default::default()
+        };
+        future.migrate();
+        assert_eq!(
+            future.version,
+            DATA_VERSION + 7,
+            "версия новее текущей не прижимается"
+        );
+    }
+
+    #[test]
+    fn oldest_active_package_skips_disposed() {
+        let mut db = Database::default();
+        let mut gone = pkg(1, d("2026-01-01"), false);
+        gone.disposed = Some(DisposedInfo {
+            date: d("2026-02-01"),
+            reason: REASON_USED,
+        });
+        let monthly = pkg(2, end_of_month(2028, 1), true);
+        db.medicines.push(Medicine {
+            id: 1,
+            name: "Тест".to_string(),
+            form: String::new(),
+            note: String::new(),
+            tags: Vec::new(),
+            packages: vec![gone, monthly],
+        });
+        let oldest = oldest_active_package(&db).unwrap();
+        assert_eq!(oldest.id, 2, "списанная упаковка не учитывается");
+        assert!(oldest.month_only, "формат показа срока доступен отчёту");
+        assert_eq!(oldest_active_expiry(&db), Some(end_of_month(2028, 1)));
+    }
+
+    #[test]
+    fn effective_expiry_never_panics_on_absurd_period() {
+        // open_period_days = i32::MAX из рукописного JSON не должен паниковать:
+        // остаётся заводской срок
+        let mut p = pkg(1, d("2027-06-01"), false);
+        p.opened = Some(d("2026-10-01"));
+        p.open_period_days = Some(i32::MAX);
+        assert_eq!(p.effective_expiry(), d("2027-06-01"));
+    }
+
+    #[test]
+    fn migrate_normalizes_counters_period_and_photo() {
+        let mut db = Database {
+            version: 0,
+            warn_days: 5000,
+            next_med_id: 1,
+            next_pkg_id: 1,
+            ..Default::default()
+        };
+        db.medicines.push(Medicine {
+            id: 7,
+            name: "Тест".to_string(),
+            form: String::new(),
+            note: String::new(),
+            tags: Vec::new(),
+            packages: vec![
+                Package {
+                    id: 42,
+                    expiry: d("2027-06-01"),
+                    month_only: false,
+                    quantity: String::new(),
+                    note: String::new(),
+                    photo: "../../evil.png".to_string(),
+                    price: None,
+                    purchase_date: None,
+                    opened: None,
+                    open_period_days: Some(i32::MAX),
+                    disposed: None,
+                },
+                Package {
+                    id: 43,
+                    expiry: d("2027-06-01"),
+                    month_only: false,
+                    quantity: String::new(),
+                    note: String::new(),
+                    photo: String::new(),
+                    price: None,
+                    purchase_date: None,
+                    opened: None,
+                    open_period_days: Some(30),
+                    disposed: None,
+                },
+            ],
+        });
+        db.migrate();
+        assert_eq!(db.warn_days, 365, "порог прижат к диапазону SpinBox");
+        assert_eq!(db.next_med_id, 8, "счётчик впереди максимального id");
+        assert_eq!(db.next_pkg_id, 44, "счётчик упаковок впереди максимального");
+        let ps = &db.medicines[0].packages;
+        assert_eq!(ps[0].open_period_days, None, "мусорный период отброшен");
+        assert_eq!(ps[0].photo, "evil.png", "путь фото сведён к имени файла");
+        assert_eq!(ps[1].open_period_days, Some(30), "корректный период цел");
     }
 }

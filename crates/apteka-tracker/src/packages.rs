@@ -126,9 +126,14 @@ pub(crate) fn rebuild_packages(ui: &AppWindow, st: &UiState) {
     sync_model(|| ui.get_packages(), |model| ui.set_packages(model), rows);
 }
 
-/// Краткое описание упаковки для журнала.
+/// Краткое описание упаковки для журнала: срок — реальный (с учётом вскрытия
+/// и периода после вскрытия), месяцный формат — как в списке покупок.
 pub(crate) fn pkg_desc(p: &Package) -> String {
-    format!("срок {}", fmt_date_display(p.expiry, p.month_only))
+    let eff = p.effective_expiry();
+    format!(
+        "срок {}",
+        fmt_date_display(eff, p.month_only && eff == p.expiry)
+    )
 }
 
 pub(crate) fn reset_pkg_form(ui: &AppWindow, st: &mut UiState) {
@@ -471,4 +476,33 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
         ui.set_show_disposed(!ui.get_show_disposed());
         rebuild_packages(&ui, &st);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use apteka_core::chrono::NaiveDate;
+
+    #[test]
+    fn pkg_desc_shows_real_expiry_of_opened_package() {
+        // журнал описывает упаковку реальным сроком: вскрытая с периодом —
+        // датой «вскрытие + период», а не заводским «до месяца»
+        let mut p = Package {
+            id: 1,
+            expiry: NaiveDate::from_ymd_opt(2028, 1, 31).unwrap(),
+            month_only: true,
+            quantity: String::new(),
+            note: String::new(),
+            price: None,
+            purchase_date: None,
+            opened: None,
+            open_period_days: None,
+            disposed: None,
+            photo: String::new(),
+        };
+        assert_eq!(pkg_desc(&p), "срок 01.2028");
+        p.opened = Some(NaiveDate::from_ymd_opt(2026, 11, 1).unwrap());
+        p.open_period_days = Some(30);
+        assert_eq!(pkg_desc(&p), "срок 01.12.2026");
+    }
 }

@@ -242,8 +242,15 @@ fn main() -> Result<(), slint::PlatformError> {
         storage::cleanup_orphan_photos(&db);
     }
     if !storage::data_file_path().exists() {
-        // При первом запуске сразу создаём файл данных рядом с exe
-        storage::save(&db).ok();
+        // При первом запуске сразу создаём файл данных рядом с exe;
+        // ошибка не проглатывается — иначе она вскроется только при первой
+        // мутации (F5).
+        if let Err(e) = storage::save(&db) {
+            message_box(&format!(
+                "Не удалось создать файл данных:\n{e}\n\nФайл: {}",
+                storage::data_file_path().display()
+            ));
+        }
     }
     let ui = AppWindow::new()?;
 

@@ -12,6 +12,15 @@ use crate::ui_sync::*;
 use crate::with_state;
 use crate::*;
 
+/// « (2 без цены)» — упаковки, учтённые в количестве, но не в денежной сумме.
+fn unpriced_note(unpriced: usize) -> String {
+    if unpriced > 0 {
+        format!(" ({unpriced} без цены)")
+    } else {
+        String::new()
+    }
+}
+
 /// Набор вторичных окон: держим сильные ссылки, чтобы окна жили до конца main().
 pub(crate) struct SecondaryWindows {
     _journal: JournalWindow,
@@ -49,13 +58,20 @@ pub(crate) fn build_windows(
                 lines.push("Списания по годам:".to_string());
                 for r in &disposals {
                     lines.push(format!(
-                        "  {} — {} уп. · {:.2} руб.",
-                        r.year, r.count, r.sum
+                        "  {} — {} уп. · {:.2} руб.{}",
+                        r.year,
+                        r.count,
+                        r.sum,
+                        unpriced_note(r.unpriced)
                     ));
                 }
                 let total_c: usize = disposals.iter().map(|r| r.count).sum();
                 let total_s: f64 = disposals.iter().map(|r| r.sum).sum();
-                lines.push(format!("  Всего: {total_c} уп. · {total_s:.2} руб."));
+                let total_u: usize = disposals.iter().map(|r| r.unpriced).sum();
+                lines.push(format!(
+                    "  Всего: {total_c} уп. · {total_s:.2} руб.{}",
+                    unpriced_note(total_u)
+                ));
             }
             lines.push(String::new());
             let purchases = purchases_by_year(&st.domain.db);
@@ -67,14 +83,19 @@ pub(crate) fn build_windows(
                 lines.push("Покупки по годам:".to_string());
                 for r in &purchases {
                     lines.push(format!(
-                        "  {} — {} уп. · {:.2} руб.",
-                        r.year, r.count, r.sum
+                        "  {} — {} уп. · {:.2} руб.{}",
+                        r.year,
+                        r.count,
+                        r.sum,
+                        unpriced_note(r.unpriced)
                     ));
                 }
                 let total_c: usize = purchases.iter().map(|r| r.count).sum();
                 let total_s: f64 = purchases.iter().map(|r| r.sum).sum();
+                let total_u: usize = purchases.iter().map(|r| r.unpriced).sum();
                 lines.push(format!(
-                    "  Всего с датой покупки: {total_c} уп. · {total_s:.2} руб."
+                    "  Всего с датой покупки: {total_c} уп. · {total_s:.2} руб.{}",
+                    unpriced_note(total_u)
                 ));
             }
             lines.push(String::new());
