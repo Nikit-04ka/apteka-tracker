@@ -19,11 +19,6 @@ pub fn data_file_path() -> PathBuf {
     exe_dir().join("apteka_data.json")
 }
 
-/// Путь к файлу экспорта CSV.
-pub fn csv_file_path() -> PathBuf {
-    exe_dir().join("apteka_export.csv")
-}
-
 /// Каталог резервных копий (рядом с exe).
 pub fn backup_dir() -> PathBuf {
     exe_dir().join("backups")
@@ -46,21 +41,31 @@ pub fn backup_from_to(src: &Path, dir: &Path, keep: usize) -> io::Result<Option<
         return Ok(None);
     }
     fs::create_dir_all(dir)?;
-    let stamp = Local::now().format("%Y%m%d-%H%M%S");
+    // Метка времени с миллисекундами: две копии в одну секунду не сливаются.
+    let stamp = Local::now().format("%Y%m%d-%H%M%S-%3f");
     let dst = dir.join(format!("apteka_{stamp}.json"));
     fs::copy(src, &dst)?;
     rotate_backups(dir, keep);
     Ok(Some(dst))
 }
 
+/// Это резервная копия (`apteka_*.json`), а не посторонний файл пользователя.
+fn is_backup_file(p: &Path) -> bool {
+    p.is_file()
+        && p.extension().is_some_and(|ext| ext == "json")
+        && p.file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("apteka_"))
+}
+
 /// Удаляет самые старые резервные копии, оставляя `keep` последних.
-/// Имена вида `apteka_YYYYMMDD-HHMMSS.json` сортируются хронологически.
+/// Имена вида `apteka_YYYYMMDD-HHMMSS[-мс].json` сортируются хронологически.
+/// Посторонние файлы в каталоге (не `apteka_*.json`) не трогаются.
 pub fn rotate_backups(dir: &Path, keep: usize) {
     let mut files: Vec<PathBuf> = match fs::read_dir(dir) {
         Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
         Err(_) => return,
     };
-    files.retain(|p| p.is_file() && p.extension().is_some_and(|ext| ext == "json"));
+    files.retain(|p| is_backup_file(p));
     files.sort();
     while files.len() > keep {
         match files.first() {
@@ -80,7 +85,7 @@ pub fn list_backups() -> Vec<PathBuf> {
         Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
         Err(_) => return Vec::new(),
     };
-    files.retain(|p| p.is_file() && p.extension().is_some_and(|ext| ext == "json"));
+    files.retain(|p| is_backup_file(p));
     files.sort();
     files.reverse();
     files
@@ -163,26 +168,43 @@ pub fn load_outcome_from(path: &Path) -> LoadOutcome {
             LoadOutcome::Loaded(db)
         }
         Err(e) => {
-            let stamp = Local::now().format("%Y%m%d-%H%M%S");
+            let stamp = Local::now().format("%Y%m%d-%H%M%S-%3f");
             let backup = PathBuf::from(format!("{}.corrupt-{stamp}", path.to_string_lossy()));
             let msg = format!("{e}");
-            let _ = fs::rename(path, &backup);
-            LoadOutcome::Corrupt {
-                database: Database::default(),
-                backup,
-                msg,
+            // Сохраняем повреждённые байты под любым именем: сначала
+            // переименованием, а если rename невозможен (файл занят) — копией.
+            // Если и это не удалось, файл НЕ тронут, и приложение не должно
+            // перезаписать его пустой базой: возвращаем Io и завершаемся.
+            let preserved = fs::rename(path, &backup).is_ok() || fs::copy(path, &backup).is_ok();
+            if preserved {
+                LoadOutcome::Corrupt {
+                    database: Database::default(),
+                    backup,
+                    msg,
+                }
+            } else {
+                LoadOutcome::Io(format!(
+                    "файл повреждён ({msg}) и его не удалось сохранить как {} — данные НЕ тронуты",
+                    backup.display()
+                ))
             }
         }
     }
 }
 
-/// Загрузка базы из файла (для восстановления из бэкапа) — без побочных эффектов.
+/// Загрузка базы из файла (для восстановления из бэкапа) — без побочных эффектов:
+/// повреждённый файл здесь не переименовывается и не копируется.
 pub fn load_database_from(path: &Path) -> Result<Database, String> {
-    match load_outcome_from(path) {
-        LoadOutcome::Loaded(db) => Ok(db),
-        LoadOutcome::Missing => Err(format!("Файл не найден: {}", path.display())),
-        LoadOutcome::Corrupt { msg, .. } => Err(format!("Повреждённый JSON: {msg}")),
-        LoadOutcome::Io(e) => Err(e),
+    if !path.exists() {
+        return Err(format!("Файл не найден: {}", path.display()));
+    }
+    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    match serde_json::from_str::<Database>(&text) {
+        Ok(mut db) => {
+            db.migrate();
+            Ok(db)
+        }
+        Err(e) => Err(format!("Повреждённый JSON: {e}")),
     }
 }
 
@@ -211,7 +233,8 @@ pub fn save_to(db: &Database, path: &Path) -> io::Result<()> {
         let text = serde_json::to_string_pretty(db).map_err(io::Error::other)?;
         let mut f = fs::File::create(&tmp)?;
         f.write_all(text.as_bytes())?;
-        f.sync_all().ok();
+        // fsync обязателен: без него rename может закрепить недописанный файл.
+        f.sync_all()?;
     }
     fs::rename(&tmp, path)
 }
@@ -389,12 +412,96 @@ mod tests {
         fs::write(&path, "{ это не json").unwrap();
         let db = load_from(&path);
         assert!(db.medicines.is_empty());
-        let leftovers: Vec<_> = fs::read_dir(&dir).unwrap().collect();
+        let leftovers: Vec<_> = fs::read_dir(&dir).unwrap().filter_map(|e| e.ok()).collect();
         assert_eq!(
             leftovers.len(),
             1,
             "повреждённый файл должен остаться как .corrupt-*"
         );
+        // байты исходного файла сохранены без потерь — их можно спасти вручную
+        let saved = fs::read_to_string(leftovers[0].path()).unwrap();
+        assert_eq!(saved, "{ это не json");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_database_from_has_no_side_effects_on_corrupt_backup() {
+        // F9: восстановление из бэкапа не должно переименовывать сам бэкап
+        let dir = temp_dir("restore-pure");
+        let path = dir.join("apteka_backup.json");
+        let original = "{ битый json";
+        fs::write(&path, original).unwrap();
+        assert!(load_database_from(&path).is_err());
+        assert!(path.exists(), "бэкап не должен быть переименован/удалён");
+        assert_eq!(fs::read_to_string(&path).unwrap(), original);
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            1,
+            "не должно появиться .corrupt-*"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rotation_spares_foreign_files() {
+        // F16: ротация трогает только apteka_*.json, чужие файлы целы
+        let dir = temp_dir("rotate-foreign");
+        fs::create_dir_all(&dir).unwrap();
+        for name in [
+            "apteka_20200101-000001-001.json",
+            "apteka_20210101-000001-001.json",
+            "apteka_20220101-000001-001.json",
+            "apteka_20230101-000001-001.json",
+        ] {
+            fs::write(dir.join(name), "{}").unwrap();
+        }
+        fs::write(dir.join("notes.json"), "{\"моё\": 1}").unwrap();
+        fs::write(dir.join("photo.png"), "x").unwrap();
+        rotate_backups(&dir, 2);
+        let left: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(left.contains(&"notes.json".to_string()), "чужой JSON цел");
+        assert!(left.contains(&"photo.png".to_string()), "чужой файл цел");
+        let backups: Vec<String> = left
+            .iter()
+            .filter(|n| n.starts_with("apteka_"))
+            .cloned()
+            .collect();
+        assert_eq!(backups.len(), 2, "ротация оставляет две свежие копии");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn save_to_reports_error_and_keeps_target_intact() {
+        // Отказ записи возвращается вызывающему, а не проглатывается: путь, где
+        // «родитель» — файл (не каталог), заставляет create_dir_all упасть.
+        let dir = temp_dir("save-fail");
+        let blocker = dir.join("apteka_data.json");
+        fs::write(&blocker, "ценные данные").unwrap();
+        let bad = blocker.join("child.json"); // родитель — файл
+        assert!(save_to(&sample_db(), &bad).is_err(), "ошибка записи возвращается");
+        assert_eq!(
+            fs::read_to_string(&blocker).unwrap(),
+            "ценные данные",
+            "исходный файл не перезаписан"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn backup_names_do_not_collide_within_same_second() {
+        // F16: две копии подряд не сливаются в одну (метка времени с миллисекундами)
+        let dir = temp_dir("backup-stamp");
+        let src = dir.join("apteka_data.json");
+        save_to(&sample_db(), &src).unwrap();
+        let bdir = dir.join("backups");
+        let a = backup_from_to(&src, &bdir, 5).unwrap().unwrap();
+        let b = backup_from_to(&src, &bdir, 5).unwrap().unwrap();
+        assert_ne!(a, b, "имена двух подряд созданных копий различны");
+        assert_eq!(fs::read_dir(&bdir).unwrap().count(), 2);
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -439,6 +546,42 @@ mod tests {
             left,
             vec!["apteka_20220101-000001.json", "apteka_20230101-000001.json"],
             "должны остаться две самые свежие копии"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn backup_restore_returns_exact_data_and_bad_backup_keeps_data_intact() {
+        // сценарий «Бэкапы → Восстановить» (windows.rs): страховочный бэкап
+        // текущего состояния, чтение выбранного бэкапа, перезапись файла данных.
+        let dir = temp_dir("restore");
+        let path = dir.join("apteka_data.json");
+        save_to(&sample_db(), &path).unwrap();
+        let before = serde_json::to_string(&load_from(&path)).unwrap();
+        let backup = backup_from_to(&path, &dir.join("backups"), 5)
+            .unwrap()
+            .expect("страховочный бэкап создан");
+        // база меняется после бэкапа
+        let mut changed = sample_db();
+        changed.medicines[0].name = "Изменено".to_string();
+        save_to(&changed, &path).unwrap();
+        assert_eq!(load_from(&path).medicines[0].name, "Изменено");
+        // восстановление: бэкап читается и перезаписывает файл данных
+        let restored = load_database_from(&backup).unwrap();
+        save_to(&restored, &path).unwrap();
+        assert_eq!(
+            serde_json::to_string(&load_from(&path)).unwrap(),
+            before,
+            "восстановление возвращает ровно сохранённое состояние"
+        );
+        // битый бэкап: ошибка на чтении, текущие данные не тронуты
+        let bad = dir.join("backups").join("bad.json");
+        fs::write(&bad, "{не json").unwrap();
+        assert!(load_database_from(&bad).is_err());
+        assert_eq!(
+            serde_json::to_string(&load_from(&path)).unwrap(),
+            before,
+            "неудачное чтение бэкапа не меняет файл данных"
         );
         fs::remove_dir_all(&dir).ok();
     }

@@ -78,12 +78,17 @@ pub(crate) enum InstanceGuard {
 }
 
 pub(crate) fn acquire_single_instance() -> InstanceGuard {
-    let path = storage::exe_dir().join("apteka.lock");
+    acquire_lock(&storage::exe_dir().join("apteka.lock"))
+}
+
+/// Захват замка по явному пути: выделено, чтобы сценарий «второй запуск» был
+/// покрыт тестом на временной папке.
+pub(crate) fn acquire_lock(path: &std::path::Path) -> InstanceGuard {
     let file = match std::fs::OpenOptions::new()
         .create(true)
         .truncate(false)
         .write(true)
-        .open(&path)
+        .open(path)
     {
         Ok(f) => f,
         Err(_) => return InstanceGuard::NoLockAvailable,
@@ -382,7 +387,7 @@ fn main() -> Result<(), slint::PlatformError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{orphan_cleanup_allowed, panic_log_entry};
+    use super::{acquire_lock, orphan_cleanup_allowed, panic_log_entry, InstanceGuard};
     use apteka_core::model::Database;
     use apteka_core::storage::LoadOutcome;
     use std::path::PathBuf;
@@ -416,5 +421,31 @@ mod tests {
         assert!(!orphan_cleanup_allowed(&LoadOutcome::Io(
             "файл занят".to_string()
         )));
+    }
+
+    #[test]
+    fn lock_blocks_second_instance_and_releases_on_drop() {
+        // второй запуск видит «уже запущена», пока замок держится;
+        // после выхода замок освобождается автоматически (F2)
+        let dir = std::env::temp_dir().join(format!("apteka-lock-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("apteka.lock");
+        let first = acquire_lock(&path);
+        assert!(
+            matches!(&first, InstanceGuard::Locked(_)),
+            "первый запуск получает замок"
+        );
+        assert!(
+            matches!(acquire_lock(&path), InstanceGuard::AlreadyRunning),
+            "пока замок держится — «уже запущена»"
+        );
+        drop(first);
+        let again = acquire_lock(&path);
+        assert!(
+            matches!(&again, InstanceGuard::Locked(_)),
+            "после выхода замок свободен"
+        );
+        drop(again);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

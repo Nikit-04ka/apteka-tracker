@@ -25,13 +25,22 @@ pub(crate) fn unique_photo_name(pid: i32, ext: &str) -> String {
 /// Возвращает имя файла либо текст ошибки для статусной строки — сбой
 /// копирования не проглатывается молча (F5).
 pub(crate) fn copy_photo_to_store(src: &std::path::Path, pid: i32) -> Result<String, String> {
+    copy_photo_to_store_in(&storage::photos_dir(), src, pid)
+}
+
+/// То же, но в указанный каталог — так сценарий «каждое сохранение — новый
+/// файл, прежний не перезаписывается» покрыт тестом (F3).
+pub(crate) fn copy_photo_to_store_in(
+    dir: &std::path::Path,
+    src: &std::path::Path,
+    pid: i32,
+) -> Result<String, String> {
     let ext = src
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
         .unwrap_or_else(|| "png".to_string());
-    let dir = storage::photos_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Не удалось создать папку photos: {e}"))?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("Не удалось создать папку photos: {e}"))?;
     let fname = unique_photo_name(pid, &ext);
     std::fs::copy(src, dir.join(&fname))
         .map_err(|e| format!("Не удалось скопировать фото: {e}"))?;
@@ -214,4 +223,32 @@ pub(crate) fn register_card_cbs(
         refresh_all(&ui, &mut st, false);
         persist(&ui, &st);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn copy_photo_keeps_previous_file_for_undo() {
+        // каждое прикрепление — новый файл: Ctrl+Z реально возвращает
+        // прежний снимок (F3), поэтому имена не должны совпадать
+        let dir = std::env::temp_dir().join(format!("apteka-card-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("src.png");
+        std::fs::write(&src, b"v1").unwrap();
+        let f1 = copy_photo_to_store_in(&dir, &src, 7).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        std::fs::write(&src, b"v2").unwrap();
+        let f2 = copy_photo_to_store_in(&dir, &src, 7).unwrap();
+        assert_ne!(f1, f2, "каждое сохранение — новое имя файла");
+        assert_eq!(
+            std::fs::read(dir.join(&f1)).unwrap(),
+            b"v1".to_vec(),
+            "прежнее фото не перезаписано — иначе Ctrl+Z не вернёт его"
+        );
+        assert_eq!(std::fs::read(dir.join(&f2)).unwrap(), b"v2".to_vec());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

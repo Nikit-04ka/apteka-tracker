@@ -21,14 +21,19 @@ pub enum EditKind {
     Tags,
 }
 
+/// Scope склейки для правок вне лекарств (порог «истекает» в статусной строке).
+pub const GLOBAL_SCOPE: i32 = i32::MIN;
+
 /// Доменное состояние: база плюс всё, что к ней относится (история отмены,
 /// признак несохранённых правок). Мутируется только методами — так
 /// удерживается инвариант «снимок в историю снят до правки».
 pub struct DomainState {
     pub db: Database,
     history: History,
-    /// вид последней склеенной правки (None — после структурных мутаций)
-    last_commit_kind: Option<EditKind>,
+    /// вид последней склеенной правки — пара (поле, лекарство): склеиваются
+    /// правки одного поля у одного и того же лекарства
+    /// (None — после структурных мутаций и шагов по истории)
+    last_commit_key: Option<(EditKind, i32)>,
     /// есть несохранённые правки текста (отложенное автосохранение)
     pub unsaved: Cell<bool>,
 }
@@ -39,7 +44,7 @@ impl DomainState {
         Self {
             db,
             history: History::new(history_capacity),
-            last_commit_kind: None,
+            last_commit_key: None,
             unsaved: Cell::new(false),
         }
     }
@@ -48,15 +53,18 @@ impl DomainState {
     /// никогда не склеиваются с соседними.
     pub fn commit(&mut self, snapshot: Database) {
         self.history.commit(snapshot);
-        self.last_commit_kind = None;
+        self.last_commit_key = None;
     }
 
-    /// Коммит со «склейкой» последовательных правок одного поля.
-    pub fn commit_coalesced(&mut self, snapshot: Database, kind: EditKind) {
-        if self.last_commit_kind != Some(kind) {
+    /// Коммит со «склейкой» последовательных правок одного поля у одного
+    /// лекарства: `scope` — id лекарства, `GLOBAL_SCOPE` — правки вне лекарств.
+    /// Та же правка поля у другого лекарства — отдельный шаг отмены.
+    pub fn commit_coalesced(&mut self, snapshot: Database, kind: EditKind, scope: i32) {
+        let key = (kind, scope);
+        if self.last_commit_key != Some(key) {
             self.history.commit(snapshot);
         }
-        self.last_commit_kind = Some(kind);
+        self.last_commit_key = Some(key);
     }
 
     /// Шаг по истории: назад при `backwards`, иначе вперёд. Подменяет `db`
@@ -70,7 +78,7 @@ impl DomainState {
         };
         let Some(next) = next else { return false };
         self.db = next;
-        self.last_commit_kind = None;
+        self.last_commit_key = None;
         true
     }
 
@@ -137,10 +145,10 @@ mod tests {
         let mut s = DomainState::new(Database::default(), 10);
         let a = s.db.clone();
         s.db.warn_days = 30;
-        s.commit_coalesced(a, EditKind::Name);
+        s.commit_coalesced(a, EditKind::Name, 1);
         let b = s.db.clone();
         s.db.warn_days = 45;
-        s.commit_coalesced(b, EditKind::Name); // склейка: второй шаг не создан
+        s.commit_coalesced(b, EditKind::Name, 1); // склейка: второй шаг не создан
         assert!(s.step_history(true));
         assert_eq!(s.db.warn_days, DEFAULT_WARN); // один шаг — к исходному
         assert!(!s.step_history(true));
@@ -151,10 +159,10 @@ mod tests {
         let mut s = DomainState::new(Database::default(), 10);
         let a = s.db.clone();
         s.db.warn_days = 30;
-        s.commit_coalesced(a, EditKind::Name);
+        s.commit_coalesced(a, EditKind::Name, 1);
         let b = s.db.clone();
         s.db.warn_days = 45;
-        s.commit_coalesced(b, EditKind::Note); // другое поле — отдельный шаг
+        s.commit_coalesced(b, EditKind::Note, 1); // другое поле — отдельный шаг
         assert!(s.step_history(true));
         assert_eq!(s.db.warn_days, 30);
         assert!(s.step_history(true));
@@ -162,18 +170,34 @@ mod tests {
     }
 
     #[test]
+    fn same_kind_other_medicine_does_not_coalesce() {
+        let mut s = DomainState::new(Database::default(), 10);
+        let a = s.db.clone();
+        s.db.warn_days = 30;
+        s.commit_coalesced(a, EditKind::Name, 1); // правка у лекарства 1
+        let b = s.db.clone();
+        s.db.warn_days = 45;
+        s.commit_coalesced(b, EditKind::Name, 2); // у лекарства 2 — отдельный шаг
+        assert!(s.step_history(true));
+        assert_eq!(s.db.warn_days, 30, "откат только второй правки");
+        assert!(s.step_history(true));
+        assert_eq!(s.db.warn_days, DEFAULT_WARN);
+        assert!(!s.step_history(true));
+    }
+
+    #[test]
     fn structural_commit_breaks_coalescing() {
         let mut s = DomainState::new(Database::default(), 10);
         let a = s.db.clone(); // 60
         s.db.warn_days = 30;
-        s.commit_coalesced(a, EditKind::Name);
+        s.commit_coalesced(a, EditKind::Name, 1);
         let b = s.db.clone(); // 30 — снимок ДО структурной мутации
         s.db.warn_days = 50; // структурная мутация посреди правок имени
         s.commit(b);
         let c = s.db.clone(); // 50
         s.db.warn_days = 45;
-        s.commit_coalesced(c, EditKind::Name); // склеиться уже не с чем: новый шаг
-                                               // три отдельных шага отмены: 45 → 50 → 30 → 60
+        s.commit_coalesced(c, EditKind::Name, 1); // склеиться уже не с чем: новый шаг
+                                                  // три отдельных шага отмены: 45 → 50 → 30 → 60
         assert!(s.step_history(true));
         assert_eq!(s.db.warn_days, 50);
         assert!(s.step_history(true));
@@ -205,11 +229,11 @@ mod tests {
         let mut s = DomainState::new(Database::default(), 10);
         let a = s.db.clone();
         s.db.warn_days = 30;
-        s.commit_coalesced(a, EditKind::Name);
+        s.commit_coalesced(a, EditKind::Name, 1);
         assert!(s.step_history(true)); // шаг отмены сбрасывает склейку
         let b = s.db.clone();
         s.db.warn_days = 45;
-        s.commit_coalesced(b, EditKind::Name);
+        s.commit_coalesced(b, EditKind::Name, 1);
         assert!(s.step_history(true));
         assert_eq!(s.db.warn_days, DEFAULT_WARN); // не перескочили два шага разом
     }
@@ -229,5 +253,23 @@ mod tests {
         db.medicines.push(med(7, 10));
         db.medicines.push(med(3, 10));
         assert_eq!(initial_selection(&db, today), 3);
+    }
+
+    #[test]
+    fn journal_events_are_part_of_history_snapshots() {
+        // события журнала живут в снимках базы: отмена убирает событие вместе
+        // со снимком, повтор возвращает — это контракт (менять только с тестом)
+        let mut st = DomainState::new(Database::default(), 50);
+        let prev = st.db.clone();
+        st.db.journal_push("упаковка открыта", "Нурофен", "уп. 1");
+        st.commit(prev);
+        assert_eq!(st.db.events.len(), 1);
+        assert!(st.step_history(true), "шаг назад есть");
+        assert!(
+            st.db.events.is_empty(),
+            "undo откатывает событие журнала вместе со снимком"
+        );
+        assert!(st.step_history(false), "шаг вперёд есть");
+        assert_eq!(st.db.events.len(), 1, "redo возвращает событие");
     }
 }

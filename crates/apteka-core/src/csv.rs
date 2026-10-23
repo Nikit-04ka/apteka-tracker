@@ -1,161 +1,18 @@
 //! Экспорт и импорт CSV: формат программы (разделитель «;», BOM, экранирование кавычек).
 use crate::model::{
     days_left, dispose_reason_text, fmt_date, fmt_date_display, parse_date_input, parse_tags,
-    status_for, status_text, Database, Medicine, Package, STATUS_DISPOSED,
+    status_for, status_text, Database, DisposedInfo, Medicine, Package, REASON_EXPIRED,
+    REASON_USED, STATUS_DISPOSED,
 };
-use crate::storage::{data_file_path, exe_dir};
+use crate::storage::exe_dir;
 use chrono::Local;
 use std::fs;
-use std::io::{self, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// Путь к файлу экспорта CSV.
 pub fn csv_file_path() -> PathBuf {
     exe_dir().join("apteka_export.csv")
-}
-
-/// Каталог резервных копий (рядом с exe).
-pub fn backup_dir() -> PathBuf {
-    exe_dir().join("backups")
-}
-
-/// Резервная копия файла данных при запуске; хранятся последние 5 копий.
-pub fn backup() -> io::Result<Option<PathBuf>> {
-    backup_from_to(&data_file_path(), &backup_dir(), 5)
-}
-
-/// Копирует `src` в каталог `dir` под именем с меткой времени и оставляет
-/// только `keep` самых свежих копий.
-pub fn backup_from_to(src: &Path, dir: &Path, keep: usize) -> io::Result<Option<PathBuf>> {
-    if !src.exists() {
-        return Ok(None);
-    }
-    fs::create_dir_all(dir)?;
-    let stamp = Local::now().format("%Y%m%d-%H%M%S");
-    let dst = dir.join(format!("apteka_{stamp}.json"));
-    fs::copy(src, &dst)?;
-    rotate_backups(dir, keep);
-    Ok(Some(dst))
-}
-
-/// Удаляет самые старые резервные копии, оставляя `keep` последних.
-/// Имена вида `apteka_YYYYMMDD-HHMMSS.json` сортируются хронологически.
-pub fn rotate_backups(dir: &Path, keep: usize) {
-    let mut files: Vec<PathBuf> = match fs::read_dir(dir) {
-        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
-        Err(_) => return,
-    };
-    files.retain(|p| p.is_file() && p.extension().is_some_and(|ext| ext == "json"));
-    files.sort();
-    while files.len() > keep {
-        match files.first() {
-            Some(oldest) => {
-                let _ = fs::remove_file(oldest);
-                files.remove(0);
-            }
-            None => break,
-        }
-    }
-}
-
-/// Список резервных копий, самые свежие первыми.
-pub fn list_backups() -> Vec<PathBuf> {
-    let dir = backup_dir();
-    let mut files: Vec<PathBuf> = match fs::read_dir(&dir) {
-        Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
-        Err(_) => return Vec::new(),
-    };
-    files.retain(|p| p.is_file() && p.extension().is_some_and(|ext| ext == "json"));
-    files.sort();
-    files.reverse();
-    files
-}
-
-/// Загрузка базы со стороны старта приложения: с полной диагностикой.
-pub fn load() -> LoadOutcome {
-    load_outcome_from(&data_file_path())
-}
-
-/// Результат загрузки базы с диагностикой.
-pub enum LoadOutcome {
-    /// Успешно загружена
-    Loaded(Database),
-    /// Файла нет — первый запуск
-    Missing,
-    /// Файл повреждён (переименован в *.corrupt-*) — работаем с пустой базой
-    Corrupt {
-        database: Database,
-        backup: PathBuf,
-        msg: String,
-    },
-    /// Файл не читается (занят/права) — вызывающий должен завершиться,
-    /// не перезаписывая данные
-    Io(String),
-}
-
-/// Загрузка с полной диагностикой (для старта приложения и тестов).
-pub fn load_outcome_from(path: &Path) -> LoadOutcome {
-    if !path.exists() {
-        return LoadOutcome::Missing;
-    }
-    let text = match fs::read_to_string(path) {
-        Ok(t) => t,
-        Err(e) => return LoadOutcome::Io(format!("{}: {e}", path.display())),
-    };
-    match serde_json::from_str::<Database>(&text) {
-        Ok(db) => LoadOutcome::Loaded(db),
-        Err(e) => {
-            let stamp = Local::now().format("%Y%m%d-%H%M%S");
-            let backup = PathBuf::from(format!("{}.corrupt-{stamp}", path.to_string_lossy()));
-            let msg = format!("{e}");
-            let _ = fs::rename(path, &backup);
-            LoadOutcome::Corrupt {
-                database: Database::default(),
-                backup,
-                msg,
-            }
-        }
-    }
-}
-
-/// Загрузка базы из файла (для восстановления из бэкапа) — без побочных эффектов.
-pub fn load_database_from(path: &Path) -> Result<Database, String> {
-    match load_outcome_from(path) {
-        LoadOutcome::Loaded(db) => Ok(db),
-        LoadOutcome::Missing => Err(format!("Файл не найден: {}", path.display())),
-        LoadOutcome::Corrupt { msg, .. } => Err(format!("Повреждённый JSON: {msg}")),
-        LoadOutcome::Io(e) => Err(e),
-    }
-}
-
-/// Загрузка «как раньше» — для тестов и внутренних нужд: пустая база при проблемах.
-pub fn load_from(path: &Path) -> Database {
-    match load_outcome_from(path) {
-        LoadOutcome::Loaded(db) => db,
-        _ => Database::default(),
-    }
-}
-
-/// Сохраняет базу рядом с exe.
-pub fn save(db: &Database) -> io::Result<PathBuf> {
-    let path = data_file_path();
-    save_to(db, &path)?;
-    Ok(path)
-}
-
-/// Атомарная запись: сначала во временный файл, затем переименование.
-pub fn save_to(db: &Database, path: &Path) -> io::Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    {
-        let text = serde_json::to_string_pretty(db).map_err(io::Error::other)?;
-        let mut f = fs::File::create(&tmp)?;
-        f.write_all(text.as_bytes())?;
-        f.sync_all().ok();
-    }
-    fs::rename(&tmp, path)
 }
 
 /// Экспортирует всё в CSV (разделитель `;`, BOM — чтобы Excel открыл кириллицу).
@@ -169,12 +26,12 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
     let today = Local::now().date_naive();
     let mut out = String::new();
     out.push('\u{FEFF}');
-    out.push_str("Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество;Цена;Открыта;Списано;Комментарий;Категории;Куплена\r\n");
+    out.push_str("Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество;Цена;Открыта;Списано;Комментарий;Категории;Куплена;Период после вскрытия\r\n");
     for m in &db.medicines {
         let tags_cell = esc(&m.tags.join(", "));
         if m.packages.is_empty() {
             out.push_str(&format!(
-                "{};{};{};;;;;;;;;{};\r\n",
+                "{};{};{};;;;;;;;;{};;\r\n",
                 esc(&m.name),
                 esc(&m.form),
                 esc(&m.note),
@@ -210,8 +67,12 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
                 .map(|d| format!("{} {}", dispose_reason_text(d.reason), fmt_date(d.date)))
                 .unwrap_or_default();
             let purchased_cell = p.purchase_date.map(fmt_date).unwrap_or_default();
+            let period_cell = p
+                .open_period_days
+                .map(|v| v.to_string())
+                .unwrap_or_default();
             out.push_str(&format!(
-                "{};{};{};{};{};{};{};{};{};{};{};{};{}\r\n",
+                "{};{};{};{};{};{};{};{};{};{};{};{};{};{}\r\n",
                 esc(&m.name),
                 esc(&m.form),
                 esc(&m.note),
@@ -224,7 +85,8 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
                 disposed_cell,
                 esc(&p.note),
                 tags_cell,
-                purchased_cell
+                purchased_cell,
+                period_cell
             ));
         }
     }
@@ -236,11 +98,27 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
 
 fn esc(s: &str) -> String {
     let mut v = s.replace('"', "\"\"");
-    // защита от CSV formula injection: Excel исполняет ячейки, начинающиеся с = + - @
-    if v.starts_with(['=', '+', '-', '@']) {
+    // Защита от CSV formula injection: Excel исполняет ячейки, начинающиеся
+    // с = + - @. Апостроф добавляется и перед собственным апострофом значения,
+    // чтобы unesc снимал ровно одну защиту и round-trip был без потерь.
+    if v.starts_with(['\'', '=', '+', '-', '@']) {
         v.insert(0, '\'');
     }
     format!("\"{}\"", v)
+}
+
+/// Обратная операция к `esc`: снимает ровно одну добавленную защиту (апостроф)
+/// перед значением, начинающимся с `'=+-@`. Иначе импорт возвращал бы имена
+/// с лишним ведущим апострофом (formula-injection защита «прилипала»).
+fn unesc(s: &str) -> String {
+    // проверка и срез по байту безопасны: ведущий '\'' — однобайтовый ASCII
+    if s.len() >= 2 && s.starts_with('\'') {
+        let rest = &s[1..];
+        if rest.starts_with(['\'', '=', '+', '-', '@']) {
+            return rest.to_string();
+        }
+    }
+    s.to_string()
 }
 
 /// Разбор CSV-текста (наш экспорт: разделитель «;», кавычки с удвоением).
@@ -284,8 +162,89 @@ pub fn parse_csv_text(text: &str) -> Vec<Vec<String>> {
     rows
 }
 
+/// Разбор ячейки «Открыта» экспортного формата: «открыта 01.10.2026».
+fn parse_opened_cell(s: &str) -> Option<chrono::NaiveDate> {
+    let rest = s.trim().strip_prefix("открыта ")?;
+    parse_date_input(rest.trim()).map(|(d, _)| d)
+}
+
+/// Разбор ячейки «Списано» экспортного формата: «израсходовано 01.10.2026»,
+/// «просрочено, выброшено 01.10.2026». Неизвестная причина трактуется
+/// как «выброшено» — обе штатные причины переживают round-trip точно.
+fn parse_disposed_cell(s: &str) -> Option<DisposedInfo> {
+    let (reason_text, date_text) = s.trim().rsplit_once(' ')?;
+    let (date, _) = parse_date_input(date_text.trim())?;
+    let reason = if reason_text.trim() == dispose_reason_text(REASON_USED) {
+        REASON_USED
+    } else {
+        REASON_EXPIRED
+    };
+    Some(DisposedInfo { date, reason })
+}
+
+/// Склеивает строки одного лекарства в его упаковки: пара (имя, форма) без
+/// регистра — как и дедупликация при импорте; строки не обязаны быть соседними.
+fn merge_medicine(
+    meds: &mut Vec<Medicine>,
+    name: &str,
+    form: String,
+    note: String,
+    tags: Vec<String>,
+    package: Option<Package>,
+) {
+    let key = |n: &str, f: &str| (n.trim().to_lowercase(), f.trim().to_lowercase());
+    let k = key(name, &form);
+    if let Some(m) = meds.iter_mut().find(|m| key(&m.name, &m.form) == k) {
+        if let Some(p) = package {
+            m.packages.push(p);
+        }
+        if m.note.is_empty() && !note.is_empty() {
+            m.note = note;
+        }
+        for t in tags {
+            if !m.tags.iter().any(|e| e.to_lowercase() == t.to_lowercase()) {
+                m.tags.push(t);
+            }
+        }
+    } else {
+        meds.push(Medicine {
+            id: 0,
+            name: name.to_string(),
+            form,
+            note,
+            tags,
+            packages: package.into_iter().collect(),
+        });
+    }
+}
+
+/// Дедупликация импортированных лекарств против существующей базы и внутри
+/// самого файла: лекарство с уже существующей парой (имя, форма) без регистра
+/// пропускается целиком — повторный импорт того же CSV не плодит дубли.
+/// Возвращает (оставленные лекарства, сколько отброшено как дубли).
+pub fn dedup_imported(
+    existing: &[Medicine],
+    mut imported: Vec<Medicine>,
+) -> (Vec<Medicine>, usize) {
+    let key = |m: &Medicine| (m.name.trim().to_lowercase(), m.form.trim().to_lowercase());
+    let mut seen: std::collections::HashSet<(String, String)> = existing.iter().map(key).collect();
+    let mut duplicates = 0usize;
+    imported.retain(|m| {
+        let k = key(m);
+        if seen.contains(&k) {
+            duplicates += 1;
+            false
+        } else {
+            seen.insert(k);
+            true
+        }
+    });
+    (imported, duplicates)
+}
+
 /// Импорт CSV-файла экспорта: возвращает лекарства (id проставит вызывающий)
-/// и количество пропущенных строк.
+/// и количество пропущенных строк. Жизненный цикл упаковки (вскрытие, период
+/// после вскрытия, списание) переживает экспорт/импорт.
 pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
     let text = fs::read_to_string(path)?;
     let text = text.strip_prefix('\u{FEFF}').unwrap_or(&text);
@@ -300,38 +259,64 @@ pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
             skipped += 1;
             continue;
         }
-        let name = row[0].trim();
+        let name_raw = unesc(&row[0]);
+        let name = name_raw.trim();
         if name.is_empty() {
             skipped += 1;
             continue;
         }
+        let form = unesc(&row[1]).trim().to_string();
+        let note = unesc(&row[2]).trim().to_string();
+        let tags_src = if row.len() > 11 {
+            unesc(&row[11])
+        } else {
+            String::new()
+        };
+        let tags = parse_tags(tags_src.trim());
         // экспортный формат: «01.2028 (до конца мес.)» — отрезаем пометку
         let date_raw = row[3].trim();
         let date_clean = date_raw.split(" (").next().unwrap_or(date_raw);
         let Some((expiry, month_only)) = parse_date_input(date_clean) else {
-            skipped += 1;
+            // строка без даты: либо мусор, либо лекарство без упаковок — экспорт
+            // пишет его одной строкой с пустыми полями упаковки
+            let empty_pkg_cells = [3, 6, 7, 8, 9, 10, 12, 13]
+                .iter()
+                .all(|&c| row.get(c).map(|v| v.trim().is_empty()).unwrap_or(true));
+            if empty_pkg_cells {
+                merge_medicine(&mut meds, name, form, note, tags, None);
+            } else {
+                skipped += 1;
+            }
             continue;
         };
-        let form = row[1].trim().to_string();
-        let note = row[2].trim().to_string();
-        let quantity = row[6].trim().to_string();
+        let quantity = unesc(&row[6]).trim().to_string();
         let price = if row.len() > 7 && !row[7].trim().is_empty() {
             row[7].trim().replace(',', ".").parse::<f64>().ok()
         } else {
             None
         };
+        let opened = row.get(8).and_then(|c| parse_opened_cell(c));
+        let disposed = row.get(9).and_then(|c| parse_disposed_cell(c));
         let pnote = if row.len() > 10 {
-            row[10].trim().to_string()
+            unesc(&row[10]).trim().to_string()
         } else {
             String::new()
         };
-        let tags_raw = if row.len() > 11 { row[11].trim() } else { "" };
         // «Куплена» (необязательная колонка): нечитаемая дата — игнорируем
         let purchase_date = if row.len() > 12 && !row[12].trim().is_empty() {
             parse_date_input(row[12].trim()).map(|(d, _)| d)
         } else {
             None
         };
+        // «Период после вскрытия» (необязательная колонка старых файлов)
+        let open_period_days = row.get(13).and_then(|c| {
+            let t = c.trim();
+            if t.is_empty() {
+                None
+            } else {
+                t.parse::<i32>().ok().filter(|v| (1..=3650).contains(v))
+            }
+        });
         let package = Package {
             id: 0,
             expiry,
@@ -340,26 +325,12 @@ pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
             note: pnote,
             price,
             purchase_date,
-            opened: None,
-            open_period_days: None,
-            disposed: None,
+            opened,
+            open_period_days,
+            disposed,
             photo: String::new(),
         };
-        // подряд идущие строки одного лекарства склеиваются в его упаковки
-        if let Some(last) = meds.last_mut() {
-            if last.name == name && last.form == form {
-                last.packages.push(package);
-                continue;
-            }
-        }
-        meds.push(Medicine {
-            id: 0,
-            name: name.to_string(),
-            form,
-            note,
-            tags: parse_tags(tags_raw),
-            packages: vec![package],
-        });
+        merge_medicine(&mut meds, name, form, note, tags, Some(package));
     }
     Ok((meds, skipped))
 }
@@ -495,6 +466,244 @@ mod tests {
         let (meds, skipped) = import_csv(&csv).unwrap();
         assert_eq!(meds.len(), 0);
         assert!(skipped >= 1);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    fn lifecycle_pkg(
+        id: i32,
+        expiry: (i32, u32, u32),
+        opened: Option<(i32, u32, u32)>,
+        period: Option<i32>,
+        disposed: Option<(i32, u32, u32, i32)>,
+    ) -> Package {
+        let d = |t: (i32, u32, u32)| chrono::NaiveDate::from_ymd_opt(t.0, t.1, t.2).unwrap();
+        Package {
+            id,
+            expiry: d(expiry),
+            month_only: false,
+            quantity: String::new(),
+            note: String::new(),
+            price: None,
+            purchase_date: None,
+            opened: opened.map(d),
+            open_period_days: period,
+            disposed: disposed.map(|(y, m, day, reason)| DisposedInfo {
+                date: d((y, m, day)),
+                reason,
+            }),
+            photo: String::new(),
+        }
+    }
+
+    #[test]
+    fn csv_roundtrip_preserves_package_lifecycle() {
+        let dir = temp_dir("lifecycle");
+        let path = dir.join("export.csv");
+        let mut db = sample_db();
+        db.medicines[0].packages.push(lifecycle_pkg(
+            3,
+            (2030, 6, 1),
+            Some((2026, 10, 1)),
+            Some(30),
+            None,
+        ));
+        db.medicines[0].packages.push(lifecycle_pkg(
+            4,
+            (2026, 1, 1),
+            None,
+            None,
+            Some((2026, 10, 5, REASON_USED)),
+        ));
+        export_csv_to(&db, &path).unwrap();
+
+        let (meds, skipped) = import_csv(&path).unwrap();
+        assert_eq!(skipped, 0);
+        assert_eq!(meds.len(), 1);
+        let ps = &meds[0].packages;
+        assert_eq!(ps.len(), 4);
+        assert_eq!(
+            ps[2].opened,
+            Some(chrono::NaiveDate::from_ymd_opt(2026, 10, 1).unwrap())
+        );
+        assert_eq!(ps[2].open_period_days, Some(30));
+        assert!(ps[3].is_disposed(), "списанная упаковка не «воскресает»");
+        assert_eq!(ps[3].disposed.as_ref().unwrap().reason, REASON_USED);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn disposed_cell_parses_both_reasons() {
+        let used = parse_disposed_cell("израсходовано 01.10.2026").unwrap();
+        assert_eq!(used.reason, REASON_USED);
+        let tossed = parse_disposed_cell("просрочено, выброшено 01.10.2026").unwrap();
+        assert_eq!(tossed.reason, REASON_EXPIRED);
+        assert_eq!(parse_disposed_cell("мусор"), None);
+    }
+
+    #[test]
+    fn import_merges_non_consecutive_rows_of_same_medicine() {
+        let dir = temp_dir("merge");
+        let csv = dir.join("in.csv");
+        fs::write(
+            &csv,
+            "\u{FEFF}Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество\r\n\
+             Аспирин;Таблетки;;2027-01-01;;;1 уп\r\n\
+             Ибупрофен;Капсулы;;2027-02-01;;;1 уп\r\n\
+             аспирин;таблетки;;2028-01-01;;;2 уп\r\n",
+        )
+        .unwrap();
+        let (meds, skipped) = import_csv(&csv).unwrap();
+        assert_eq!(skipped, 0);
+        assert_eq!(
+            meds.len(),
+            2,
+            "строки одного лекарства склеиваются и через другие, и без регистра"
+        );
+        let aspirin = meds.iter().find(|m| m.name == "Аспирин").unwrap();
+        assert_eq!(aspirin.packages.len(), 2, "упаковки обеих строк сохранены");
+        assert_eq!(aspirin.packages[0].quantity, "1 уп");
+        assert_eq!(aspirin.packages[1].quantity, "2 уп");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn medicine_without_packages_survives_roundtrip() {
+        let dir = temp_dir("nopkg");
+        let path = dir.join("export.csv");
+        let mut db = Database::default();
+        db.medicines.push(Medicine {
+            id: 1,
+            name: "Пустышка".to_string(),
+            form: "Прочее".to_string(),
+            note: "без упаковок".to_string(),
+            tags: vec!["запас".to_string()],
+            packages: Vec::new(),
+        });
+        export_csv_to(&db, &path).unwrap();
+        let (meds, skipped) = import_csv(&path).unwrap();
+        assert_eq!(skipped, 0, "строка без упаковок — не мусор");
+        assert_eq!(meds.len(), 1);
+        assert!(meds[0].packages.is_empty());
+        assert_eq!(meds[0].note, "без упаковок");
+        assert_eq!(meds[0].tags, vec!["запас".to_string()]);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn formula_injection_guard_survives_roundtrip() {
+        // F12: esc добавляет апостроф перед =+-@, unesc снимает его при импорте —
+        // имена с «опасным» первым символом не растут и не теряют защиту
+        let dir = temp_dir("inject");
+        let path = dir.join("export.csv");
+        let mut db = Database::default();
+        for (i, name) in ["=SUM(A1)", "'=1+1", "+7", "@cmd", "'просто", "обычное"]
+            .iter()
+            .enumerate()
+        {
+            db.medicines.push(Medicine {
+                id: i as i32 + 1,
+                name: (*name).to_string(),
+                form: "Таблетки".to_string(),
+                note: String::new(),
+                tags: Vec::new(),
+                packages: Vec::new(),
+            });
+        }
+        export_csv_to(&db, &path).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("\"'=SUM(A1)\""),
+            "добавлена защита от формулы"
+        );
+        let (meds, skipped) = import_csv(&path).unwrap();
+        assert_eq!(skipped, 0);
+        let got: Vec<String> = meds.iter().map(|m| m.name.clone()).collect();
+        assert_eq!(
+            got,
+            vec!["=SUM(A1)", "'=1+1", "+7", "@cmd", "'просто", "обычное"],
+            "round-trip без прилипшего апострофа"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn csv_export_import_export_is_idempotent() {
+        // Тест №4: экспорт → импорт → экспорт даёт тот же текст
+        let dir = temp_dir("idempotent");
+        let p1 = dir.join("a.csv");
+        let p2 = dir.join("b.csv");
+        let db = sample_db();
+        export_csv_to(&db, &p1).unwrap();
+        let (meds, _) = import_csv(&p1).unwrap();
+        let mut db2 = Database {
+            warn_days: db.warn_days,
+            ..Default::default()
+        };
+        db2.medicines = meds;
+        export_csv_to(&db2, &p2).unwrap();
+        assert_eq!(
+            fs::read_to_string(&p1).unwrap(),
+            fs::read_to_string(&p2).unwrap(),
+            "повторный экспорт после импорта идентичен"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn dedup_skips_existing_medicine_by_name_and_form() {
+        // Тест №1: повторный импорт того же файла → 0 новых; семантика —
+        // лекарство с существующей парой (имя, форма) пропускается целиком
+        let existing = sample_db().medicines; // «Парацетамол "Тева"», форма «Таблетки»
+        let dup = Medicine {
+            id: 0,
+            name: "парацетамол \"тева\"".to_string(), // без регистра
+            form: "таблетки".to_string(),
+            note: String::new(),
+            tags: Vec::new(),
+            packages: vec![],
+        };
+        let fresh = Medicine {
+            id: 0,
+            name: "Новый".to_string(),
+            form: "Капсулы".to_string(),
+            note: String::new(),
+            tags: Vec::new(),
+            packages: vec![],
+        };
+        let (kept, dup_count) = dedup_imported(&existing, vec![dup.clone(), fresh, dup]);
+        assert_eq!(kept.len(), 1, "осталось только новое лекарство");
+        assert_eq!(kept[0].name, "Новый");
+        assert_eq!(dup_count, 2, "дубль против базы + дубль внутри файла");
+        // повторный импорт того же — пусто
+        let (kept2, dup2) = dedup_imported(&existing, vec![]);
+        assert!(kept2.is_empty());
+        assert_eq!(dup2, 0);
+    }
+
+    #[test]
+    fn reimport_of_same_file_adds_no_duplicates() {
+        // контракт README: повторный импорт того же CSV не плодит дубли.
+        // Лекарство с известной парой (имя, форма) отбрасывается ЦЕЛИКОМ —
+        // вместе со своими упаковками, даже новыми.
+        let dir = temp_dir("reimport");
+        let path = dir.join("exp.csv");
+        export_csv_to(&sample_db(), &path).unwrap();
+        let (imported, skipped) = import_csv(&path).unwrap();
+        assert_eq!(skipped, 0);
+        assert_eq!(imported.len(), 1, "в файле одно лекарство");
+        let (kept, dups) = dedup_imported(&sample_db().medicines, imported);
+        assert!(kept.is_empty(), "повторный импорт не добавляет лекарств");
+        assert_eq!(dups, 1);
+        // новые упаковки у уже известного лекарства тоже не проходят
+        let mut more = sample_db();
+        let extra = more.medicines[0].packages[0].clone();
+        more.medicines[0].packages.push(extra);
+        let (kept2, dups2) = dedup_imported(&sample_db().medicines, more.medicines);
+        assert!(
+            kept2.is_empty(),
+            "лекарство отбрасывается вместе со всеми упаковками"
+        );
+        assert_eq!(dups2, 1);
         fs::remove_dir_all(&dir).ok();
     }
 }
