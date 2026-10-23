@@ -6,9 +6,10 @@ Windows-приложение на Rust (GUI на Slint) для учёта лек
 с разными сроками. Записи с истекающим/истекшим сроком подсвечиваются.
 
 ## Tech Stack
-- Язык: Rust 1.95 (x86_64-pc-windows-msvc)
+- Язык: Rust (x86_64-pc-windows-msvc); тулчейн разработки 1.95, MSRV в Cargo.toml — 1.92
 - GUI: Slint 1.18 (стиль fluent, сборка через slint-build)
 - Данные: serde + serde_json, даты: chrono
+- Диалоги: rfd; буфер обмена: arboard; Win32 API: windows-sys (MessageBoxW)
 - Хранение: JSON рядом с exe (`apteka_data.json`), атомарная запись через `.tmp` + rename
 
 ## Project Structure
@@ -18,7 +19,9 @@ Cargo workspace (repo root = workspace root): ядро отделено от UI.
 ```
 Cargo.toml                      # workspace
 crates/apteka-core/src/         # lib: model.rs, storage.rs, history.rs
-crates/apteka-tracker/          # bin: build.rs, ui/app.slint, assets/, src/main.rs
+crates/apteka-tracker/          # bin: build.rs, ui/app.slint, assets/, src/*.rs
+                                #   (main, state, ui_sync, packages, card, windows, misc)
+bin/                            # рабочая копия программы: apteka-tracker.exe + apteka_data.json, settings.json, backups/ (в .gitignore)
 docs/screenshot.png
 ```
 
@@ -46,8 +49,11 @@ docs/screenshot.png
 - Мастер-детей интерфейс без модальных окон: редактирование на месте,
   добавление лекарства создаёт запись «Новое лекарство» и открывает её в деталях.
 - Удаление лекарства — двухшаговое подтверждение (кнопка меняет текст на «Точно удалить?»).
-- Повреждённый JSON переименовывается в `*.corrupt-<дата>`, не удаляется.
-- CSV: разделитель `;`, BOM, экранирование кавычек — для прямого открытия в Excel.
+- Повреждённый JSON сохраняется как `*.corrupt-<дата>` (rename, при занятом
+  файле — копия), не удаляется; если сохранить не удалось, приложение не
+  перезаписывает файл и завершается.
+- CSV: разделитель `;`, BOM, экранирование кавычек — для прямого открытия в Excel;
+  жизненный цикл упаковки (вскрытие, период, списание) переживает экспорт/импорт.
 - Иконка рисуется скриптом `assets/make_icon.py` (Pillow) → `assets/icon.png` (окно,
   `@image-url`) + `assets/icon.ico` (ресурс exe через `winresource` в build.rs).
 - Один экземпляр: файловый замок `apteka.lock` (std `try_lock`, сам освобождается
@@ -59,7 +65,11 @@ docs/screenshot.png
 - Клавиатура: корневой `FocusScope` + `forward-focus` — ↑/↓ (`move-selection`),
   Ctrl+N/Ctrl+F, Delete (двухшаговое), Escape. Стрелки обрабатываются по `Key.*`.
 - Статусы пересчитываются ежечасно (`slint::Timer` → `refresh_statuses`, только
-  чтение; форма редактирования не сбрасывается).
+  чтение; форма редактирования не сбрасывается). Поля деталей переписываются
+  только при реальном изменении — иначе курсор в LineEdit сбрасывался бы
+  посреди набора.
+- Форма лекарства вне справочника `FORMS` (импорт, легаси-данные) показывается
+  как есть последним индексом модели форм и не подменяется «Прочее».
 - «Клонировать упаковку» (`pkg-clone`): форма новой упаковки предзаполняется
   количеством/комментарием клона и сроком «сегодня + 1 год»; сохранение —
   через обычный `pkg-save`.
@@ -80,7 +90,8 @@ docs/screenshot.png
 - Undo/redo: `apteka_core::history::History` — полные снимки `Database`
   (данные — килобайты), стек 50 шагов. Любой мутационный колбэк обязан
   снять `prev = st.domain.db.clone()` ДО мутации и вызвать `commit_history(...)`
-  (для правок одного поля — `commit_history_coalesced(...)`, склейка в
+  (для правок одного поля — `commit_history_coalesced(..., kind, scope)`,
+  склейка по паре «поле + лекарство» (`GLOBAL_SCOPE` для порога) в
   `DomainState`). Хоткеи Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z, кнопки в статусной строке.
 - Каркас колбэков — через `with_state!`: макрос захватывает Weak окна и клон
   `Rc<RefCell<UiState>>`, делает upgrade и `borrow()`/`borrow_mut()` (по наличию
