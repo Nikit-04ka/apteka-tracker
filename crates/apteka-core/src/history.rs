@@ -5,11 +5,24 @@
 
 use crate::model::Database;
 
-#[derive(Default)]
+/// Снимки состояния для Ctrl+Z / Ctrl+Y. Стек ограничен по глубине, чтобы
+/// история не росла бесконечно.
 pub struct History {
     undo_stack: Vec<Database>,
     redo_stack: Vec<Database>,
     cap: usize,
+}
+
+/// Глубина стека по умолчанию (совпадает с глубиной в приложении).
+const DEFAULT_CAPACITY: usize = 50;
+
+impl Default for History {
+    /// `History::default()` — рабочая история на 50 шагов, а не «пустая»
+    /// (derive давал бы `cap: 0`, из-за чего каждый commit молча вытеснял бы
+    /// снимок и undo никогда не срабатывал).
+    fn default() -> Self {
+        Self::new(DEFAULT_CAPACITY)
+    }
 }
 
 impl History {
@@ -117,6 +130,18 @@ mod tests {
         let mut h = History::new(10);
         assert!(h.undo(db_with("X")).is_none());
         assert!(h.redo(db_with("X")).is_none());
+    }
+
+    #[test]
+    fn default_history_is_usable_not_empty() {
+        // F11: Default не должен давать cap=0, при котором undo молча невозможен
+        let mut h = History::default();
+        h.commit(db_with("Первый"));
+        assert!(h.can_undo());
+        assert_eq!(
+            h.undo(db_with("Второй")).unwrap().medicines[0].name,
+            "Первый"
+        );
     }
 
     #[test]
