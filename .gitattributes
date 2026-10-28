@@ -1,0 +1,15 @@
+# Нормализуем переводы строк: в репозитории LF, при выгрузке — как удобнее ОС.
+* text=auto
+
+# Явно текстовые (на случай проблем с автоопределением)
+*.rs text diff=rust
+*.toml text
+*.md text
+*.slint text
+*.yml text
+*.ps1 text
+*.py text
+
+# Бинарные — git не должен трогать содержимое
+*.png binary
+*.ico binary

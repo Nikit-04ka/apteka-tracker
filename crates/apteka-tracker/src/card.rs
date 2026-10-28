@@ -3,9 +3,11 @@
 use apteka_core::chrono::Local;
 use apteka_core::model::*;
 use apteka_core::state::{EditKind, GLOBAL_SCOPE};
+use image::ImageDecoder;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::misc::*;
 use crate::state::*;
@@ -24,9 +26,53 @@ pub(crate) fn unique_photo_name(pid: i32, ext: &str) -> String {
     format!("pkg_{pid}-{stamp}-{n:03}.{ext}")
 }
 
-/// Копирует выбранный файл в каталог `photos/` под уникальным именем.
-/// Возвращает имя файла либо текст ошибки для статусной строки — сбой
-/// копирования не проглатывается молча (F5).
+/// Максимальная сторона миниатюры фото упаковки. В карточке фото показывается
+/// в 52×58 px (и в плейсхолдере), запас — на будущие крупные вьюверы.
+const PHOTO_THUMB_MAX: u32 = 480;
+
+/// Миниатюра фото: уменьшенное изображение и расширение для имени файла.
+struct Thumbnail {
+    image: image::DynamicImage,
+    ext: &'static str,
+}
+
+/// Читает изображение и уменьшает до `PHOTO_THUMB_MAX` по большей стороне
+/// (маленькие изображения не увеличиваются). EXIF-поворот применяется:
+/// портретные снимки с телефона не должны ложиться на бок.
+fn make_thumbnail(src: &std::path::Path) -> Result<Thumbnail, String> {
+    let mut reader = image::ImageReader::open(src)
+        .and_then(|r| r.with_guessed_format())
+        .map_err(|e| format!("файл не читается: {e}"))?;
+    // лимиты декодера: легальный PNG может объявлять огромные размеры
+    // (декомпрессионная бомба) — без лимита это OOM-abort приложения
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(20000);
+    limits.max_image_height = Some(20000);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    let ext = match reader.format() {
+        Some(image::ImageFormat::Png) => "png",
+        _ => "jpg",
+    };
+    let mut decoder = reader
+        .into_decoder()
+        .map_err(|e| format!("изображение не декодируется: {e}"))?;
+    let orientation = decoder.orientation().map_err(|e| e.to_string())?;
+    let mut img = image::DynamicImage::from_decoder(decoder)
+        .map_err(|e| format!("изображение не декодируется: {e}"))?;
+    img.apply_orientation(orientation);
+    // уменьшаем только крупные: маленькие изображения не растягиваются
+    if img.width() > PHOTO_THUMB_MAX || img.height() > PHOTO_THUMB_MAX {
+        img = img.thumbnail(PHOTO_THUMB_MAX, PHOTO_THUMB_MAX);
+    }
+    Ok(Thumbnail { image: img, ext })
+}
+
+/// Копирует фото упаковки в каталог `photos/` миниатюрой (≤480 px) под
+/// уникальным именем. Оригинал не сохраняется: декод мегапиксельного снимка —
+/// десятки МБ RAM и паузы при листании упаковок, а показывается картинка
+/// в 52×58. Битое/неподдерживаемое изображение — честная ошибка, а не
+/// молча неработающее фото. Возвращает имя файла либо текст ошибки (F5).
 pub(crate) fn copy_photo_to_store(src: &std::path::Path, pid: i32) -> Result<String, String> {
     copy_photo_to_store_in(&storage::photos_dir(), src, pid)
 }
@@ -38,15 +84,15 @@ pub(crate) fn copy_photo_to_store_in(
     src: &std::path::Path,
     pid: i32,
 ) -> Result<String, String> {
-    let ext = src
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e.to_lowercase())
-        .unwrap_or_else(|| "png".to_string());
     std::fs::create_dir_all(dir).map_err(|e| format!("Не удалось создать папку photos: {e}"))?;
-    let fname = unique_photo_name(pid, &ext);
-    std::fs::copy(src, dir.join(&fname))
-        .map_err(|e| format!("Не удалось скопировать фото: {e}"))?;
+    let thumb = make_thumbnail(src)?;
+    let fname = unique_photo_name(pid, thumb.ext);
+    let dst = dir.join(&fname);
+    let result = match thumb.ext {
+        "png" => thumb.image.save_with_format(&dst, image::ImageFormat::Png),
+        _ => thumb.image.save_with_format(&dst, image::ImageFormat::Jpeg),
+    };
+    result.map_err(|e| format!("Не удалось сохранить миниатюру фото: {e}"))?;
     Ok(fname)
 }
 
@@ -73,12 +119,19 @@ pub(crate) fn register_card_cbs(
     save_timer: &Rc<slint::Timer>,
 ) {
     with_state!(ui, state, on_select_medicine, |ui, mut st, id| {
+        // если в форме упаковки был несохранённый ввод — сброс сообщается,
+        // а не происходит молча
+        let had_form = pkg_form_has_input(&ui);
         st.selected_id = id;
         ui.set_selected_id(id);
         ui.set_suggestions(ModelRc::default());
-        clear_photo_cache(&st);
+        // кэш фото не сбрасываем: имена файлов уникальны и неизменяемы —
+        // возврат к лекарству не перечитывает и не декодирует фото заново
         reset_view_flags(&ui);
         update_details(&ui, &mut st, true);
+        if had_form {
+            set_status_info(&ui, "Несохранённая форма упаковки очищена".to_string());
+        }
     });
 
     with_state!(ui, state, on_add_medicine, |ui, mut st| {
@@ -103,14 +156,14 @@ pub(crate) fn register_card_cbs(
         }
         let prev = st.domain.db.clone();
         let id = st.domain.db.new_med_id();
-        st.domain.db.medicines.push(Medicine {
+        st.domain.db.medicines.push(Arc::new(Medicine {
             id,
             name: "Новое лекарство".to_string(),
             form: FORMS[0].to_string(),
             note: String::new(),
             tags: Vec::new(),
             packages: Vec::new(),
-        });
+        }));
         st.domain
             .db
             .journal_push("лекарство добавлено", "Новое лекарство", "");
@@ -132,25 +185,41 @@ pub(crate) fn register_card_cbs(
         let prev = st.domain.db.clone();
         let name = st.selected().map(|m| m.name.clone());
         st.domain.db.medicines.retain(|m| m.id != sel);
-        if let Some(n) = name {
-            st.domain.db.journal_push("лекарство удалено", &n, "");
+        if let Some(n) = &name {
+            st.domain.db.journal_push("лекарство удалено", n, "");
         }
         st.selected_id = -1;
         ui.set_selected_id(-1);
-        clear_photo_cache(&st);
+        // кэш фото не сбрасываем: имена неизменяемы, сами файлы в сессии
+        // не удаляются (сироты чистятся только при следующем старте)
         reset_view_flags(&ui);
         commit_refresh_persist(&ui, &mut st, prev, true);
+        if let Some(n) = &name {
+            // факт и способ отката — словами, а не только в журнале
+            set_status_info(&ui, format!("Удалено: «{n}» — вернуть: Ctrl+Z"));
+        }
+    });
+
+    // Взведено подтверждение удаления (клавиша Delete или кнопка): имя
+    // лекарства знает только Rust — подсказка о втором нажатии идёт в статус
+    with_state!(ui, state, on_delete_arm_hint, |ui, st| {
+        if let Some(m) = st.selected() {
+            ui.set_status_message(SharedString::from(format!(
+                "Удалить «{}»? Нажмите Delete ещё раз (Esc — отмена)",
+                m.name
+            )));
+        }
     });
 
     let timer = Rc::clone(save_timer);
     with_state!(ui, state, on_name_edited, |ui, mut st, text| {
         disarm_delete(&ui);
-        let prev = st.domain.db.clone();
-        if let Some(m) = st.selected_mut() {
-            m.name = text.to_string();
-        }
         let scope = st.selected_id;
-        commit_history_coalesced(&ui, &mut st, prev, EditKind::Name, scope);
+        edit_coalesced(&ui, &mut st, EditKind::Name, scope, |db| {
+            if let Some(m) = db.medicine_mut(scope) {
+                m.name = text.to_string();
+            }
+        });
         // автодополнение: имена других лекарств с тем же началом
         let needle = text.trim().to_lowercase();
         let mut sugg: Vec<SharedString> = Vec::new();
@@ -159,8 +228,9 @@ pub(crate) fn register_card_cbs(
                 if m.id == st.selected_id {
                     continue;
                 }
-                if m.name.to_lowercase().starts_with(&needle) && !m.name.to_lowercase().eq(&needle)
-                {
+                // to_lowercase — один раз на лекарство, не дважды
+                let lower = m.name.to_lowercase();
+                if lower.starts_with(&needle) && lower != needle {
                     let cand = SharedString::from(m.name.clone());
                     if !sugg.contains(&cand) {
                         sugg.push(cand);
@@ -181,12 +251,12 @@ pub(crate) fn register_card_cbs(
     let timer = Rc::clone(save_timer);
     with_state!(ui, state, on_note_edited, |ui, mut st, text| {
         disarm_delete(&ui);
-        let prev = st.domain.db.clone();
-        if let Some(m) = st.selected_mut() {
-            m.note = text.to_string();
-        }
         let scope = st.selected_id;
-        commit_history_coalesced(&ui, &mut st, prev, EditKind::Note, scope);
+        edit_coalesced(&ui, &mut st, EditKind::Note, scope, |db| {
+            if let Some(m) = db.medicine_mut(scope) {
+                m.note = text.to_string();
+            }
+        });
         st.domain.unsaved.set(true);
         timer.restart();
     });
@@ -194,12 +264,18 @@ pub(crate) fn register_card_cbs(
     let timer = Rc::clone(save_timer);
     with_state!(ui, state, on_tags_edited, |ui, mut st, text| {
         disarm_delete(&ui);
-        let prev = st.domain.db.clone();
-        if let Some(m) = st.selected_mut() {
-            m.tags = parse_tags(&text);
-        }
         let scope = st.selected_id;
-        commit_history_coalesced(&ui, &mut st, prev, EditKind::Tags, scope);
+        edit_coalesced(&ui, &mut st, EditKind::Tags, scope, |db| {
+            if let Some(m) = db.medicine_mut(scope) {
+                m.tags = parse_tags(&text);
+            }
+        });
+        // категории входят в поиск и в фильтр «Категории»: выпадающий фильтр
+        // и список обновляются сразу, а не до ближайшего refresh_all.
+        // Порядок: сначала фильтр (может сброситься вместе с исчезнувшей
+        // категорией), затем список — уже с его итоговым состоянием
+        refresh_tag_options(&ui, &mut st);
+        rebuild_list(&ui, &st);
         st.domain.unsaved.set(true);
         timer.restart();
     });
@@ -218,12 +294,12 @@ pub(crate) fn register_card_cbs(
         if st.selected().map(|m| m.form.as_str()) == Some(form.as_str()) {
             return; // выбрано то, что и было — шаг истории не нужен
         }
-        let prev = st.domain.db.clone();
-        if let Some(m) = st.selected_mut() {
-            m.form = form;
-        }
         let scope = st.selected_id;
-        commit_history_coalesced(&ui, &mut st, prev, EditKind::Form, scope);
+        edit_coalesced(&ui, &mut st, EditKind::Form, scope, |db| {
+            if let Some(m) = db.medicine_mut(scope) {
+                m.form = form;
+            }
+        });
         let id = st.selected_id;
         refresh_med_row(&ui, id, &st);
         persist(&ui, &st);
@@ -253,12 +329,18 @@ pub(crate) fn register_card_cbs(
         rebuild_list(&ui, &st);
     });
 
+    // Порог «Истекает»: правка склеивается в один шаг истории, а сохранение
+    // дебаунсится общим save_timer — иначе каждая стрелка SpinBox и каждая
+    // цифра давали полный fsync файла (на флешке — заметно).
+    let timer = Rc::clone(save_timer);
     with_state!(ui, state, on_warn_days_changed, |ui, mut st, value| {
-        let prev = st.domain.db.clone();
-        st.domain.db.warn_days = value;
-        commit_history_coalesced(&ui, &mut st, prev, EditKind::WarnDays, GLOBAL_SCOPE);
+        disarm_delete(&ui);
+        edit_coalesced(&ui, &mut st, EditKind::WarnDays, GLOBAL_SCOPE, |db| {
+            db.warn_days = value;
+        });
         refresh_all(&ui, &mut st, false);
-        persist(&ui, &st);
+        st.domain.unsaved.set(true);
+        timer.restart();
     });
 }
 
@@ -267,26 +349,76 @@ mod tests {
     use super::*;
 
     #[test]
-    fn copy_photo_keeps_previous_file_for_undo() {
-        // каждое прикрепление — новый файл: Ctrl+Z реально возвращает
+    fn copy_photo_makes_thumbnail_keeps_previous_file_for_undo() {
+        // каждое прикрепление — миниатюра в новый файл: Ctrl+Z реально возвращает
         // прежний снимок (F3), поэтому имена не должны совпадать
         let dir = std::env::temp_dir().join(format!("apteka-card-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
+        // «снимок с телефона»: 3000×2000, не влезает в миниатюру целиком
+        let big = image::RgbImage::from_fn(3000, 2000, |x, y| {
+            image::Rgb([(x % 256) as u8, (y % 256) as u8, 128])
+        });
         let src = dir.join("src.png");
-        std::fs::write(&src, b"v1").unwrap();
+        image::DynamicImage::ImageRgb8(big).save(&src).unwrap();
         // имена уникальны даже в одну миллисекунду — без пауз
         assert_ne!(unique_photo_name(7, "png"), unique_photo_name(7, "png"));
         let f1 = copy_photo_to_store_in(&dir, &src, 7).unwrap();
-        std::fs::write(&src, b"v2").unwrap();
+        // второе «фото» отличается содержимым
+        let big2 =
+            image::RgbImage::from_fn(3000, 2000, |x, _y| image::Rgb([(x % 256) as u8, 200, 90]));
+        image::DynamicImage::ImageRgb8(big2).save(&src).unwrap();
         let f2 = copy_photo_to_store_in(&dir, &src, 7).unwrap();
         assert_ne!(f1, f2, "каждое сохранение — новое имя файла");
-        assert_eq!(
+        assert_ne!(
             std::fs::read(dir.join(&f1)).unwrap(),
-            b"v1".to_vec(),
+            std::fs::read(dir.join(&f2)).unwrap(),
             "прежнее фото не перезаписано — иначе Ctrl+Z не вернёт его"
         );
-        assert_eq!(std::fs::read(dir.join(&f2)).unwrap(), b"v2".to_vec());
+        // обе копии — миниатюры: большая сторона не превышает лимит
+        for f in [&f1, &f2] {
+            let img = image::open(dir.join(f)).unwrap();
+            assert!(img.width() <= PHOTO_THUMB_MAX && img.height() <= PHOTO_THUMB_MAX);
+        }
+        // маленькое исходное изображение не растягивается
+        let tiny_src = dir.join("tiny.png");
+        image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(64, 40, |x, y| {
+            image::Rgb([x as u8, y as u8, 7])
+        }))
+        .save(&tiny_src)
+        .unwrap();
+        let f3 = copy_photo_to_store_in(&dir, &tiny_src, 8).unwrap();
+        let tiny = image::open(dir.join(&f3)).unwrap();
+        assert_eq!((tiny.width(), tiny.height()), (64, 40), "апскейла нет");
+        // не-изображение — честная ошибка, а не молча битое фото
+        let bad = dir.join("bad.png");
+        std::fs::write(&bad, "это не изображение".as_bytes()).unwrap();
+        assert!(copy_photo_to_store_in(&dir, &bad, 9).is_err());
+        // декомпрессионная бомба: настоящее изображение шире лимита — отказ
+        // декодера, а не выделение гигабайт
+        let wide_src = dir.join("wide.png");
+        let wide = image::RgbImage::from_fn(20001, 3, |x, _y| image::Rgb([(x % 256) as u8, 1, 2]));
+        image::DynamicImage::ImageRgb8(wide)
+            .save(&wide_src)
+            .unwrap();
+        assert!(
+            make_thumbnail(&wide_src).is_err(),
+            "изображение за лимитами декодера — честная ошибка"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn thumbnail_honors_limits_without_huge_alloc() {
+        // отдельная проверка самого make_thumbnail: PNG с шириной за лимитом
+        // декодируется с ошибкой лимита, а не попыткой выделить память
+        let dir = std::env::temp_dir().join(format!("apteka-thumb-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let src = dir.join("tall.png");
+        let tall = image::RgbImage::from_fn(3, 20001, |_x, y| image::Rgb([1, 2, (y % 256) as u8]));
+        image::DynamicImage::ImageRgb8(tall).save(&src).unwrap();
+        assert!(make_thumbnail(&src).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -297,17 +429,17 @@ mod tests {
         let mut db = Database::default();
         assert_eq!(empty_placeholder_id(&db), None);
         let id = db.new_med_id();
-        db.medicines.push(Medicine {
+        db.medicines.push(Arc::new(Medicine {
             id,
             name: "Новое лекарство".to_string(),
             form: FORMS[0].to_string(),
             note: String::new(),
             tags: Vec::new(),
             packages: Vec::new(),
-        });
+        }));
         assert_eq!(empty_placeholder_id(&db), Some(id));
         // заполненная запись с тем же именем — уже не плейсхолдер
-        db.medicines[0].note = "реальная заметка".to_string();
+        db.medicine_mut(id).unwrap().note = "реальная заметка".to_string();
         assert_eq!(empty_placeholder_id(&db), None);
     }
 }

@@ -2,6 +2,7 @@
 
 use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 /// Категории лекарственной формы (единый источник для UI и CSV).
 pub const FORMS: &[&str] = &[
@@ -25,9 +26,15 @@ pub const STATUS_EXPIRED: i32 = 2;
 pub const STATUS_EMPTY: i32 = 3;
 pub const STATUS_DISPOSED: i32 = 4;
 
-/// Причина списания упаковки.
+/// Ёмкость журнала событий: старые записи вытесняются. Окно журнала
+/// предупреждает об усечении, опираясь на эту константу.
+pub const EVENTS_CAP: usize = 400;
+
+/// Причина списания упаковки. `DISCARDED` — «Выбросить»: кнопка доступна и для
+/// просроченной, и для ещё годной упаковки, поэтому текст не утверждает
+/// просрочку (значение 1 — прежняя константа «reason expired», JSON хранит число).
 pub const REASON_USED: i32 = 0;
-pub const REASON_EXPIRED: i32 = 1;
+pub const REASON_DISCARDED: i32 = 1;
 
 /// Факт списания упаковки (израсходована или выброшена).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -39,7 +46,7 @@ pub struct DisposedInfo {
 pub fn dispose_reason_text(reason: i32) -> &'static str {
     match reason {
         REASON_USED => "израсходовано",
-        REASON_EXPIRED => "просрочено, выброшено",
+        REASON_DISCARDED => "выброшено",
         _ => "списано",
     }
 }
@@ -107,6 +114,8 @@ impl Package {
 }
 
 /// Лекарство. Может содержать несколько упаковок с разными сроками.
+/// В `Database` хранится в `Arc`: снимки истории делят неизменённые лекарства
+/// и не копируют их впустую (copy-on-write на уровне лекарства).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Medicine {
     pub id: i32,
@@ -164,7 +173,7 @@ pub struct Database {
     #[serde(default)]
     pub next_pkg_id: i32,
     #[serde(default)]
-    pub medicines: Vec<Medicine>,
+    pub medicines: Vec<Arc<Medicine>>,
     /// Журнал событий (хранятся последние 400).
     #[serde(default)]
     pub events: Vec<JournalEvent>,
@@ -197,6 +206,7 @@ impl Database {
         self.warn_days = self.warn_days.clamp(5, 365);
         // Период после вскрытия вне 0..=3650 — мусор: переполнил бы дату.
         for m in &mut self.medicines {
+            let m = Arc::make_mut(m);
             for p in &mut m.packages {
                 if let Some(days) = p.open_period_days {
                     if !(0..=3650).contains(&days) {
@@ -259,14 +269,19 @@ impl Database {
     }
 
     pub fn medicine(&self, id: i32) -> Option<&Medicine> {
-        self.medicines.iter().find(|m| m.id == id)
+        self.medicines.iter().find(|m| m.id == id).map(Arc::as_ref)
     }
 
+    /// Мутация лекарства через `Arc::make_mut`: при общем снимке истории
+    /// копируется только правимое лекарство, а не вся база.
     pub fn medicine_mut(&mut self, id: i32) -> Option<&mut Medicine> {
-        self.medicines.iter_mut().find(|m| m.id == id)
+        self.medicines
+            .iter_mut()
+            .find(|m| m.id == id)
+            .map(Arc::make_mut)
     }
 
-    /// Добавляет событие в журнал (хранятся последние 400).
+    /// Добавляет событие в журнал (хранятся последние `EVENTS_CAP`).
     pub fn journal_push(&mut self, kind: &str, medicine: &str, package: &str) {
         self.events.push(JournalEvent {
             at: chrono::Local::now().naive_local(),
@@ -274,7 +289,7 @@ impl Database {
             medicine: medicine.to_string(),
             package: package.to_string(),
         });
-        if self.events.len() > 400 {
+        if self.events.len() > EVENTS_CAP {
             self.events.remove(0);
         }
     }
@@ -658,6 +673,14 @@ mod tests {
     }
 
     #[test]
+    fn dispose_reason_text_does_not_claim_expiry() {
+        // «Выбросить» доступен и для годной упаковки — текст причины
+        // не должен утверждать просрочку
+        assert_eq!(dispose_reason_text(REASON_USED), "израсходовано");
+        assert_eq!(dispose_reason_text(REASON_DISCARDED), "выброшено");
+    }
+
+    #[test]
     fn medicine_info_picks_nearest_expiry_and_worst_status() {
         let m = Medicine {
             id: 1,
@@ -748,7 +771,7 @@ mod tests {
                 open_period_days: None,
                 disposed: Some(DisposedInfo {
                     date: d("2026-10-01"),
-                    reason: REASON_EXPIRED,
+                    reason: REASON_DISCARDED,
                 }),
                 photo: String::new(),
             }],
@@ -780,25 +803,27 @@ mod tests {
             ..Default::default()
         };
         let today = d("2026-10-20");
-        let mk = |name: &str, expiry: NaiveDate, disposed: Option<DisposedInfo>| Medicine {
-            id: 0,
-            name: name.to_string(),
-            form: "Таблетки".to_string(),
-            note: String::new(),
-            tags: Vec::new(),
-            packages: vec![Package {
+        let mk = |name: &str, expiry: NaiveDate, disposed: Option<DisposedInfo>| {
+            Arc::new(Medicine {
                 id: 0,
-                expiry,
-                month_only: false,
-                quantity: "1 уп.".to_string(),
+                name: name.to_string(),
+                form: "Таблетки".to_string(),
                 note: String::new(),
-                photo: String::new(),
-                price: None,
-                purchase_date: None,
-                opened: None,
-                open_period_days: None,
-                disposed,
-            }],
+                tags: Vec::new(),
+                packages: vec![Package {
+                    id: 0,
+                    expiry,
+                    month_only: false,
+                    quantity: "1 уп.".to_string(),
+                    note: String::new(),
+                    photo: String::new(),
+                    price: None,
+                    purchase_date: None,
+                    opened: None,
+                    open_period_days: None,
+                    disposed,
+                }],
+            })
         };
         db.medicines.push(mk("Просрочка", d("2026-09-01"), None));
         db.medicines.push(mk("Скоро", d("2026-11-25"), None));
@@ -808,7 +833,7 @@ mod tests {
             d("2026-09-01"),
             Some(DisposedInfo {
                 date: today,
-                reason: REASON_EXPIRED,
+                reason: REASON_DISCARDED,
             }),
         ));
         let rows = shopping_list(&db, today);
@@ -835,14 +860,14 @@ mod tests {
         opened.quantity = "1 фл.".to_string();
         opened.opened = Some(today);
         opened.open_period_days = Some(30);
-        db.medicines.push(Medicine {
+        db.medicines.push(Arc::new(Medicine {
             id: 1,
             name: "Тест".to_string(),
             form: String::new(),
             note: String::new(),
             tags: Vec::new(),
             packages: vec![sealed, opened],
-        });
+        }));
         let rows = shopping_list(&db, today);
         assert_eq!(rows.len(), 2);
         assert!(rows[0].contains("11.2026"), "запечатанная: месяц без дня");
@@ -890,13 +915,15 @@ mod tests {
             date: dd(2026, 3, 1),
             reason: 1,
         };
-        let mk = |purchase: Option<NaiveDate>, disposed: Option<DisposedInfo>| Medicine {
-            id: 0,
-            name: String::new(),
-            form: String::new(),
-            note: String::new(),
-            tags: Vec::new(),
-            packages: vec![priced_pkg(dd(2030, 1, 1), Some(250.0), purchase, disposed)],
+        let mk = |purchase: Option<NaiveDate>, disposed: Option<DisposedInfo>| {
+            Arc::new(Medicine {
+                id: 0,
+                name: String::new(),
+                form: String::new(),
+                note: String::new(),
+                tags: Vec::new(),
+                packages: vec![priced_pkg(dd(2030, 1, 1), Some(250.0), purchase, disposed)],
+            })
         };
         db.medicines.push(mk(Some(dd(2025, 5, 1)), None));
         db.medicines
@@ -931,14 +958,14 @@ mod tests {
         // нет, и сводка это честно показывает («без цены»), а не «0.00 руб.»
         let mut db = Database::default();
         let dd = |y: i32, m: u32, d: u32| NaiveDate::from_ymd_opt(y, m, d).unwrap();
-        db.medicines.push(Medicine {
+        db.medicines.push(Arc::new(Medicine {
             id: 0,
             name: String::new(),
             form: String::new(),
             note: String::new(),
             tags: Vec::new(),
             packages: vec![priced_pkg(dd(2030, 1, 1), None, Some(dd(2025, 5, 1)), None)],
-        });
+        }));
         let purchases = purchases_by_year(&db);
         assert_eq!(purchases.len(), 1);
         assert_eq!(purchases[0].count, 1);
@@ -1004,14 +1031,14 @@ mod tests {
             reason: REASON_USED,
         });
         let monthly = pkg(2, end_of_month(2028, 1), true);
-        db.medicines.push(Medicine {
+        db.medicines.push(Arc::new(Medicine {
             id: 1,
             name: "Тест".to_string(),
             form: String::new(),
             note: String::new(),
             tags: Vec::new(),
             packages: vec![gone, monthly],
-        });
+        }));
         let oldest = oldest_active_package(&db).unwrap();
         assert_eq!(oldest.id, 2, "списанная упаковка не учитывается");
         assert!(oldest.month_only, "формат показа срока доступен отчёту");
@@ -1037,7 +1064,7 @@ mod tests {
             next_pkg_id: 1,
             ..Default::default()
         };
-        db.medicines.push(Medicine {
+        db.medicines.push(Arc::new(Medicine {
             id: 7,
             name: "Тест".to_string(),
             form: String::new(),
@@ -1071,7 +1098,7 @@ mod tests {
                     disposed: None,
                 },
             ],
-        });
+        }));
         db.migrate();
         assert_eq!(db.warn_days, 365, "порог прижат к диапазону SpinBox");
         assert_eq!(db.next_med_id, 8, "счётчик впереди максимального id");

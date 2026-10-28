@@ -5,7 +5,7 @@ use apteka_core::model::*;
 use apteka_core::settings::AppSettings;
 use apteka_core::state::EditKind;
 use slint::private_unstable_api::re_exports::ColorScheme;
-use slint::{Color, ComponentHandle, ModelRc, SharedString};
+use slint::{Color, ComponentHandle, Model, ModelRc, SharedString};
 use std::cell::RefCell;
 
 use crate::card::*;
@@ -38,16 +38,50 @@ pub(crate) fn color_green() -> Color {
 pub(crate) fn reset_view_flags(ui: &AppWindow) {
     ui.set_delete_armed(false);
     ui.set_delete_btn_text(SharedString::from("Удалить лекарство"));
+    ui.set_pkg_open_armed(-1);
+    ui.set_pkg_delete_armed(-1);
     ui.set_show_disposed(false);
 }
 
-/// Сбрасывает взведённое подтверждение удаления лекарства (кнопка/клавиша
-/// Delete), не трогая остальные флаги вида. Вызывается при действиях, отличных
-/// от самого удаления (правки карточки), чтобы «Точно удалить?» не переживало
-/// чужое действие и не удаляло лекарство с одного нажатия (F19).
+/// Сбрасывает взведённые подтверждения (удаление лекарства кнопкой/клавишей
+/// Delete, «Точно открыть?» и «Точно удалить?» на карточке упаковки), не трогая
+/// остальные флаги вида. Вызывается при действиях, отличных от самого
+/// подтверждаемого, чтобы «Точно …?» не переживало чужое действие и не
+/// выполнялось с одного нажатия (F19).
 pub(crate) fn disarm_delete(ui: &AppWindow) {
     ui.set_delete_armed(false);
     ui.set_delete_btn_text(SharedString::from("Удалить лекарство"));
+    ui.set_pkg_open_armed(-1);
+    ui.set_pkg_delete_armed(-1);
+}
+
+/// Показывает ошибку в статусной строке: красной переносимой строкой, до
+/// следующей успешной операции (успешный `persist` сбрасывает). Обычные
+/// сообщения при этом не теряются — ошибка видна, пока её не починили.
+pub(crate) fn report_error(ui: &AppWindow, msg: String) {
+    ui.set_save_error(true);
+    ui.set_status_message(SharedString::from(msg));
+}
+
+/// Информационное сообщение в статусную строку: активную ошибку не затирает —
+/// подтверждения вида «Удалено: …» не должны вытеснять текст сбоя сохранения.
+pub(crate) fn set_status_info(ui: &AppWindow, msg: String) {
+    if !ui.get_save_error() {
+        ui.set_status_message(SharedString::from(msg));
+    }
+}
+
+/// В форме упаковки есть несохранённый ввод пользователя? Нужно, чтобы при
+/// смене лекарства сообщать о сбросе формы, а не молча терять ввод.
+pub(crate) fn pkg_form_has_input(ui: &AppWindow) -> bool {
+    ui.get_pkg_editing()
+        || ui.get_pending_photo()
+        || !ui.get_pkg_expiry().trim().is_empty()
+        || !ui.get_pkg_quantity().trim().is_empty()
+        || !ui.get_pkg_note().trim().is_empty()
+        || !ui.get_pkg_price().trim().is_empty()
+        || !ui.get_pkg_period().trim().is_empty()
+        || !ui.get_pkg_purchase_date().trim().is_empty()
 }
 
 /// Сохраняет базу на диск и показывает результат в статусной строке.
@@ -70,10 +104,10 @@ pub(crate) fn persist(ui: &AppWindow, st: &UiState) {
         }
         Err(e) => {
             st.domain.unsaved.set(true);
-            ui.set_save_error(true);
-            ui.set_status_message(SharedString::from(format!(
-                "ОШИБКА сохранения: {e} — проверьте, что диск и папка доступны для записи"
-            )));
+            report_error(
+                ui,
+                format!("ОШИБКА сохранения: {e} — проверьте, что диск и папка доступны для записи"),
+            );
         }
     }
 }
@@ -125,18 +159,20 @@ pub(crate) fn commit_history(ui: &AppWindow, st: &mut UiState, snapshot: Databas
     sync_history_ui(ui, st);
 }
 
-/// То же со «склейкой» последовательных правок одного поля — логика в ядре
-/// (`DomainState::commit_coalesced`). `scope` — id лекарства, у которого правится
+/// Правка одного поля со «склейкой» последовательных правок — логика в ядре
+/// (`DomainState::edit_coalesced`). `scope` — id лекарства, у которого правится
 /// поле (`GLOBAL_SCOPE` для правок вне лекарств): правки одного поля у разных
-/// лекарств не склеиваются в один шаг отмены.
-pub(crate) fn commit_history_coalesced(
+/// лекарств не склеиваются в один шаг отмены. Снимок «до правки» снимает ядро —
+/// и только когда правка начинает новый шаг: набор текста по буквам не
+/// клонирует базу впустую на каждое нажатие.
+pub(crate) fn edit_coalesced(
     ui: &AppWindow,
     st: &mut UiState,
-    snapshot: Database,
     kind: EditKind,
     scope: i32,
+    f: impl FnOnce(&mut Database),
 ) {
-    st.domain.commit_coalesced(snapshot, kind, scope);
+    st.domain.edit_coalesced(kind, scope, f);
     sync_history_ui(ui, st);
 }
 
@@ -170,29 +206,43 @@ pub(crate) fn history_step(ui: &AppWindow, st: &mut UiState, backwards: bool) {
         st.selected_id = -1;
         ui.set_selected_id(-1);
     }
-    clear_photo_cache(st);
+    clear_photo_cache(st); // заменена база целиком — консервативный сброс кэша
     reset_view_flags(ui);
+    let had_form = pkg_form_has_input(ui);
     refresh_all(ui, st, true);
     sync_history_ui(ui, st);
     persist(ui, st);
+    if had_form {
+        // отмена сбросила форму — говорим об этом, а не молча теряем ввод
+        set_status_info(
+            ui,
+            "Правка отменена — несохранённая форма упаковки очищена".to_string(),
+        );
+    }
 }
 
 /// Регистрирует автодополнение названия, календарь выбора даты и прикрепление
 /// фото упаковки (F6).
 pub(crate) fn register_misc_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>) {
-    // Автодополнение названия по уже заведённым лекарствам
-    with_state!(ui, state, on_suggestion_picked, |ui, mut st, text| {
-        let prev = st.domain.db.clone();
-        if let Some(m) = st.selected_mut() {
-            m.name = text.to_string();
-        }
-        commit_history(&ui, &mut st, prev);
-        ui.set_detail_name(text);
-        ui.set_suggestions(ModelRc::default());
-        let id = st.selected_id;
-        refresh_med_row(&ui, id, &st);
-        persist(&ui, &st);
-    });
+    // Автодополнение названия по уже заведённым лекарствам: клик по подсказке
+    // и Enter в поле названия идут через одну точку применения (без with_state! —
+    // заём состояния делает сама apply_suggestion, как и в фото-диалоге)
+    {
+        let h = ui.as_weak();
+        let s = state.clone();
+        ui.on_suggestion_picked(move |text| {
+            let ui = h.unwrap();
+            apply_suggestion(&ui, &s, text.as_str());
+        });
+        let h = ui.as_weak();
+        let s = state.clone();
+        ui.on_suggestion_accept(move || {
+            let ui = h.unwrap();
+            if let Some(first) = ui.get_suggestions().row_data(0) {
+                apply_suggestion(&ui, &s, first.as_str());
+            }
+        });
+    }
 
     // Календарь: открытие (месяц из текущего срока), листание, выбор дня
     with_state!(ui, state, on_cal_month_opened, |ui, mut st| {
@@ -227,6 +277,7 @@ pub(crate) fn register_misc_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>) {
     });
     with_state!(ui, state, on_cal_pick, |ui, st, ymd| {
         if let Ok(d) = NaiveDate::parse_from_str(ymd.as_str(), "%Y-%m-%d") {
+            disarm_delete(&ui);
             ui.set_pkg_expiry(SharedString::from(fmt_date(d)));
             validate_pkg_form(&ui, &st);
         }
@@ -239,60 +290,97 @@ pub(crate) fn register_misc_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>) {
         let s = state.clone();
         ui.on_pick_photo(move || {
             let ui = h.unwrap();
-            // ВАЖНО: не держим заём состояния во время модального диалога rfd —
-            // диалог прокачивает message loop, и сработавший таймер мог бы
-            // захватить borrow() поверх borrow_mut() (паника BorrowMutError).
-            let editing = {
-                let st = s.borrow();
-                (st.pkg_edit_id, st.pending_photo.is_some())
-            };
-            let Some(file) = rfd::FileDialog::new()
-                .set_title("Выберите фото упаковки")
-                .add_filter("Изображения", &["png", "jpg", "jpeg"])
-                .pick_file()
-            else {
-                return;
-            };
-
-            if editing.0 >= 0 {
-                // редактируем существующую — копируем сразу
-                let pid = editing.0;
-                let fname = match copy_photo_to_store(&file, pid) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        ui.set_status_message(SharedString::from(e));
-                        return;
-                    }
-                };
-                let mut st = s.borrow_mut();
-                st.photo_cache.borrow_mut().remove(&fname);
-                // Мутация домена: снимок в историю ДО правки и сохранение на
-                // диск. Имя файла уникально, прежний снимок не перезаписан —
-                // Ctrl+Z реально вернёт старое фото (F3).
-                let prev = st.domain.db.clone();
-                let mut changed = false;
-                if let Some(m) = st.selected_mut() {
-                    if let Some(p) = m.packages.iter_mut().find(|p| p.id == pid) {
-                        if p.photo != fname {
-                            p.photo = fname;
-                            changed = true;
-                        }
-                    }
-                }
-                if changed {
-                    commit_history(&ui, &mut st, prev);
-                }
-                rebuild_packages(&ui, &st);
-                if changed {
-                    persist(&ui, &st);
-                }
-                ui.set_status_message(SharedString::from("Фото упаковки обновлено"));
-            } else {
-                // новая упаковка: прикрепим файл при сохранении
-                let mut st = s.borrow_mut();
-                st.pending_photo = Some(file);
-                ui.set_pending_photo(true);
-            }
+            run_photo_dialog(&ui, &s, None);
+        });
+        // Клик по плейсхолдеру «фото недоступно»: прикрепить файл к этой
+        // упаковке, не трогая режим формы (создание/правка)
+        let h = ui.as_weak();
+        let s = state.clone();
+        ui.on_pkg_replace_photo(move |pid| {
+            let ui = h.unwrap();
+            run_photo_dialog(&ui, &s, Some(pid));
         });
     }
+}
+
+/// Применяет выбранную подсказку автодополнения к названию лекарства. Одна
+/// точка для клика по подсказке и для Enter в поле названия.
+fn apply_suggestion(ui: &AppWindow, state: &Rc<RefCell<UiState>>, text: &str) {
+    disarm_delete(ui);
+    let mut st = state.borrow_mut();
+    let prev = st.domain.db.clone();
+    if let Some(m) = st.selected_mut() {
+        m.name = text.to_string();
+    }
+    commit_history(ui, &mut st, prev);
+    ui.set_detail_name(SharedString::from(text));
+    ui.set_suggestions(ModelRc::default());
+    let id = st.selected_id;
+    refresh_med_row(ui, id, &st);
+    persist(ui, &st);
+}
+
+/// Диалог выбора фото: для существующей упаковки (`force_pid` или режим правки
+/// формы) файл копируется и прикрепляется сразу; в режиме создания — откладывается
+/// до сохранения (`pending_photo`). Заём состояния не держится во время модального
+/// диалога rfd: он прокачивает message loop, и сработавший таймер мог бы захватить
+/// borrow() поверх borrow_mut() (паника BorrowMutError).
+fn run_photo_dialog(ui: &AppWindow, state: &Rc<RefCell<UiState>>, force_pid: Option<i32>) {
+    let edit_pid = force_pid.or_else(|| {
+        let st = state.borrow();
+        (st.pkg_edit_id >= 0).then_some(st.pkg_edit_id)
+    });
+    let Some(file) = rfd::FileDialog::new()
+        .set_title("Выберите фото упаковки")
+        .add_filter("Изображения", &["png", "jpg", "jpeg"])
+        .pick_file()
+    else {
+        return;
+    };
+    match edit_pid {
+        Some(pid) => attach_photo(ui, state, pid, &file),
+        None => {
+            // новая упаковка: прикрепим файл при сохранении
+            let mut st = state.borrow_mut();
+            st.pending_photo = Some(file);
+            ui.set_pending_photo(true);
+        }
+    }
+}
+
+/// Прикрепляет выбранный файл к существующей упаковке: копия в photos/,
+/// снимок в историю, обновление карточки и сохранение.
+fn attach_photo(ui: &AppWindow, state: &Rc<RefCell<UiState>>, pid: i32, file: &std::path::Path) {
+    let fname = match copy_photo_to_store(file, pid) {
+        Ok(f) => f,
+        Err(e) => {
+            // сбой копирования не проглатывается молча (F5) — красная строка
+            // с ошибкой до следующей успешной операции
+            report_error(ui, e);
+            return;
+        }
+    };
+    let mut st = state.borrow_mut();
+    st.photo_cache.borrow_mut().remove(&fname);
+    // Мутация домена: снимок в историю ДО правки и сохранение на диск. Имя
+    // файла уникально, прежний снимок не перезаписан — Ctrl+Z реально вернёт
+    // старое фото (F3).
+    let prev = st.domain.db.clone();
+    let mut changed = false;
+    if let Some(m) = st.selected_mut() {
+        if let Some(p) = m.packages.iter_mut().find(|p| p.id == pid) {
+            if p.photo != fname {
+                p.photo = fname;
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        commit_history(ui, &mut st, prev);
+    }
+    rebuild_packages(ui, &st);
+    if changed {
+        persist(ui, &st);
+    }
+    set_status_info(ui, "Фото упаковки обновлено".to_string());
 }

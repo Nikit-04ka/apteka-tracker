@@ -116,6 +116,12 @@ pub(crate) fn rebuild_list(ui: &AppWindow, st: &UiState) {
     .into_iter()
     .map(|(m, info)| build_med_row(m, &info))
     .collect();
+
+    // Выбранное лекарство не попало в видимый список: панель деталей продолжает
+    // его показывать — предупреждаем, чтобы не правили «невидимое» лекарство
+    let selected_hidden = st.selected_id >= 0 && !rows.iter().any(|r| r.id == st.selected_id);
+    ui.set_selected_hidden(selected_hidden);
+
     sync_model(|| ui.get_medicines(), |model| ui.set_medicines(model), rows);
 
     ui.set_list_empty_text(SharedString::from(
@@ -153,20 +159,38 @@ pub(crate) fn update_summary(ui: &AppWindow, st: &UiState) {
     )));
     ui.set_summary_expired(SharedString::from(format!("Просрочено: {}", expired)));
 
-    let cost: f64 = st
+    // Цена и признак «есть хоть одна указанная цена»: без него чип показывает
+    // честный ноль там, где данные просто не введены — это выглядит как потеря
+    let mut cost = 0.0f64;
+    let mut priced = false;
+    for p in st
         .domain
         .db
         .medicines
         .iter()
         .flat_map(|m| m.packages.iter())
         .filter(|p| !p.is_disposed())
-        .filter_map(|p| p.price)
-        .sum();
-    ui.set_summary_cost(SharedString::from(format!("Стоимость: {cost:.0} руб.")));
+    {
+        if let Some(v) = p.price {
+            cost += v;
+            priced = true;
+        }
+    }
+    ui.set_summary_cost(SharedString::from(if priced {
+        format!("Стоимость: {cost:.0} руб.")
+    } else {
+        "Стоимость: —".to_string()
+    }));
 }
 
-/// Кэш фото привязан к просматриваемым лекарствам; при смене выделения или
-/// замене базы сбрасываем — декод заново по требованию.
+/// Кэш декодированных фото: ключ — имя файла в `photos/`. Имена уникальны
+/// и неизменяемы (каждое прикрепление — новое имя), поэтому кэш корректен
+/// всю сессию: повторный просмотр лекарства не перечитывает и не декодирует
+/// фото заново. Сброс — только при замене базы целиком (restore/import) —
+/// консервативно. Предел `PHOTO_CACHE_CAP` — предохранитель RAM за долгую
+/// сессию (миниатюры ≤480 px ≈ 0.7 МБ декода на снимок).
+pub(crate) const PHOTO_CACHE_CAP: usize = 128;
+
 pub(crate) fn clear_photo_cache(st: &UiState) {
     st.photo_cache.borrow_mut().clear();
 }
@@ -247,11 +271,16 @@ pub(crate) fn move_selection(ui: &AppWindow, st: &mut UiState, delta: i32) {
     let Some(new_idx) = move_selection_index(&ids, st.selected_id, delta) else {
         return;
     };
+    // кэш фото не сбрасываем: имена файлов уникальны и неизменяемы —
+    // стрелки туда-сюда по списку не перечитывают фото с диска
+    let had_form = pkg_form_has_input(ui);
     st.selected_id = ids[new_idx];
     ui.set_selected_id(st.selected_id);
-    clear_photo_cache(st);
     reset_view_flags(ui);
     update_details(ui, st, true);
+    if had_form {
+        set_status_info(ui, "Несохранённая форма упаковки очищена".to_string());
+    }
 }
 
 /// Календарная сетка: 6 недель × 7 дней от отображаемого месяца.

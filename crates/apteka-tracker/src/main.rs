@@ -161,6 +161,13 @@ pub(crate) fn install_panic_hook() {
             .to_string();
         let entry = panic_log_entry(&stamp, env!("CARGO_PKG_VERSION"), &payload, &place);
         let path = storage::exe_dir().join("apteka_crash.log");
+        // предохранитель размера: лог не должен расти годами без ограничений
+        if std::fs::metadata(&path)
+            .map(|m| m.len() > 1_000_000)
+            .unwrap_or(false)
+        {
+            let _ = std::fs::remove_file(&path);
+        }
         if let Ok(mut f) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -178,7 +185,11 @@ pub(crate) fn install_panic_hook() {
 
 #[cfg(windows)]
 pub(crate) fn notify_already_running() {
-    message_box("Домашняя аптечка уже запущена.");
+    message_box(
+        "Домашняя аптечка уже запущена.\n\n\
+         Если окна не видно — посмотрите на панели задач: возможно, \
+         программа свёрнута или её окно на другом мониторе.",
+    );
 }
 
 #[cfg(not(windows))]
@@ -230,8 +241,10 @@ fn main() -> Result<(), slint::PlatformError> {
     }
 
     // Резервная копия текущего состояния — до любых правок этого запуска.
-    // backup_done = false (сбой) → первая мутация повторит бэкап сегодня же.
-    let (backup_note, backup_done) = match storage::backup() {
+    // Раз в сутки: повторные запуски того же дня копию не плодят (иначе
+    // ротация keep=5 вытеснила бы копии прошлых дней). backup_done = false
+    // (сбой) → первая мутация повторит бэкап сегодня же.
+    let (backup_note, backup_done) = match storage::backup_daily() {
         Ok(Some(path)) => (format!(" · Бэкап: {}", path.display()), true),
         Ok(None) => (String::new(), true),
         Err(e) => (format!(" · Бэкап не удался: {e}"), false),
@@ -320,8 +333,10 @@ fn main() -> Result<(), slint::PlatformError> {
             slint::TimerMode::SingleShot,
             std::time::Duration::from_millis(800),
             move || {
-                if let Some(ui) = h.upgrade() {
-                    let st = s.borrow();
+                // try_borrow: message box (паника, выход) прокачивает message
+                // loop, и тик может прилететь на занятом состоянии — пропускаем
+                // его: unsaved останется и будет дозаписан мутацией или выходом
+                if let (Some(ui), Ok(st)) = (h.upgrade(), s.try_borrow()) {
                     if st.domain.unsaved.get() {
                         persist(&ui, &st);
                     }
@@ -359,9 +374,11 @@ fn main() -> Result<(), slint::PlatformError> {
             slint::TimerMode::Repeated,
             std::time::Duration::from_secs(3600),
             move || {
-                let ui = h.unwrap();
-                let st = s.borrow();
-                refresh_statuses(&ui, &st);
+                // try_borrow — как у save_timer: тик на занятом состоянии
+                // (message box прокачал loop) просто пропускается до следующего часа
+                if let (Some(ui), Ok(st)) = (h.upgrade(), s.try_borrow()) {
+                    refresh_statuses(&ui, &st);
+                }
             },
         );
     }

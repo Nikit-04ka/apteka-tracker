@@ -73,17 +73,18 @@ impl History {
 mod tests {
     use super::*;
     use chrono::NaiveDate;
+    use std::sync::Arc;
 
     fn db_with(name: &str) -> Database {
         let mut db = Database::default();
-        db.medicines.push(crate::model::Medicine {
+        db.medicines.push(Arc::new(crate::model::Medicine {
             id: 1,
             name: name.to_string(),
             form: String::new(),
             note: String::new(),
             tags: Vec::new(),
             packages: Vec::new(),
-        });
+        }));
         db
     }
 
@@ -164,7 +165,7 @@ mod tests {
     fn dates_survive_snapshots() {
         let mut h = History::new(5);
         let mut db = Database::default();
-        db.medicines.push(crate::model::Medicine {
+        db.medicines.push(Arc::new(crate::model::Medicine {
             id: 1,
             name: "Тест".into(),
             form: "Таблетки".into(),
@@ -183,7 +184,7 @@ mod tests {
                 open_period_days: None,
                 disposed: None,
             }],
-        });
+        }));
         h.commit(db);
         let restored = h.undo(Database::default()).unwrap();
         assert!(restored.medicines[0].packages[0].month_only);

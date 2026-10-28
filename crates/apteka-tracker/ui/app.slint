@@ -326,8 +326,13 @@ component MedRow inherits Rectangle {
 export component AppWindow inherits Window {
     title: "Домашняя аптечка — учёт сроков годности";
     icon: @image-url("../assets/icon.png");
-    width: 1150px;
-    height: 680px;
+    // preferred — начальный размер окна, min — предел уменьшения при ресайзе.
+    // Не задавай здесь width/height: они фиксируют размер и запрещают ресайз.
+    // min-width подобран по строке кнопок карточки упаковки (5-6 кнопок + фото).
+    min-width: 1280px;
+    min-height: 720px;
+    preferred-width: 1400px;
+    preferred-height: 820px;
     forward-focus: keys;
 
     // ===== Данные списка =====
@@ -354,6 +359,9 @@ export component AppWindow inherits Window {
     in-out property <[string]> form-options;
     in-out property <string> delete-btn-text: "Удалить лекарство";
     in-out property <bool> delete-armed: false;
+    // Выбранное лекарство не попало в видимый список (поиск/фильтр) —
+    // предупреждение в панели деталей, чтобы не править «невидимое» лекарство
+    in-out property <bool> selected-hidden: false;
 
     // ===== Сводка =====
     in-out property <string> summary-total: "Лекарств: 0 · Упаковок: 0";
@@ -392,6 +400,13 @@ export component AppWindow inherits Window {
     callback pkg-delete(int);
     callback pkg-clone(int);
     callback pkg-open(int);
+    // Фото у упаковки указано, но файл не читается: клик по плейсхолдеру
+    // открывает диалог и прикрепляет новое фото к этой упаковке
+    callback pkg-replace-photo(int);
+    // Взведено подтверждение удаления лекарства — подсказка в статусной строке
+    callback delete-arm-hint();
+    // Enter в поле названия: принять первую подсказку автодополнения
+    callback suggestion-accept();
     callback pkg-dispose(int, int);
     callback pkg-restore(int);
     callback toggle-show-disposed();
@@ -430,6 +445,11 @@ export component AppWindow inherits Window {
     in-out property <string> pkg-purchase-date: "";
     in-out property <string> packages-empty-text: "Упаковок пока нет.";
     in-out property <bool> pending-photo: false;
+    // Двухшаговое подтверждение опасных действий над упаковкой: id упаковки,
+    // для которой взведено «Точно …?» (-1 — ничего не взведено). Открытие и
+    // удаление необратимы в UI одним кликом, поэтому требуют второго.
+    in-out property <int> pkg-open-armed: -1;
+    in-out property <int> pkg-delete-armed: -1;
 
     // Автодополнение названия
     in-out property <[string]> suggestions;
@@ -440,11 +460,9 @@ export component AppWindow inherits Window {
 
     // ===== Клавиатура: ↑/↓ — список, Ctrl+N — новое лекарство, Ctrl+F — поиск,
     // Delete — удалить (в два шага), Escape — отмена =====
+    // Геометрия окна (min/preferred) задана на AppWindow — FocusScope просто
+    // заполняет окно и держит горячие клавиши.
     keys := FocusScope {
-        min-width: 940px;
-        min-height: 560px;
-        preferred-width: 1150px;
-        preferred-height: 680px;
 
         key-pressed(event) => {
             if (event.modifiers.control && (event.text == "n" || event.text == "N")) {
@@ -473,13 +491,15 @@ export component AppWindow inherits Window {
                 if (!root.delete-armed) {
                     root.delete-armed = true;
                     root.delete-btn-text = "Точно удалить?";
+                    root.delete-arm-hint();
                 } else {
                     root.delete-medicine();
                 }
                 accept
             } else if (event.text == Key.Escape) {
-                // Escape отменяет всё взведённое: и правку упаковки, и
-                // подтверждение удаления лекарства
+                // Escape отменяет всё взведённое: правку упаковки, подтверждение
+                // удаления лекарства, подтверждения на карточке упаковки,
+                // подсказки автодополнения
                 if (root.pkg-editing) {
                     root.pkg-cancel-edit();
                 }
@@ -487,6 +507,9 @@ export component AppWindow inherits Window {
                     root.delete-armed = false;
                     root.delete-btn-text = "Удалить лекарство";
                 }
+                root.pkg-open-armed = -1;
+                root.pkg-delete-armed = -1;
+                root.suggestions = [];
                 accept
             } else {
                 reject
@@ -687,6 +710,13 @@ export component AppWindow inherits Window {
                 if (root.has-selection): VerticalLayout {
                     spacing: 10px;
 
+                    if (root.selected-hidden): Text {
+                        text: "Это лекарство скрыто текущим поиском или фильтром — в списке слева его не видно";
+                        font-size: 11px;
+                        wrap: word-wrap;
+                        color: Theme.warn-text;
+                    }
+
                     VerticalLayout {
                         spacing: 3px;
                         FieldLabel { text: "Название"; }
@@ -694,6 +724,8 @@ export component AppWindow inherits Window {
                             text <=> root.detail-name;
                             font-size: 16px;
                             edited(text) => { root.name-edited(text); }
+                            // Enter — принять первую подсказку автодополнения
+                            accepted(text) => { root.suggestion-accept(); }
                         }
                     }
 
@@ -722,6 +754,7 @@ export component AppWindow inherits Window {
                                     if (!root.delete-armed) {
                                         root.delete-armed = true;
                                         root.delete-btn-text = "Точно удалить?";
+                                        root.delete-arm-hint();
                                     } else {
                                         root.delete-medicine();
                                     }
@@ -777,7 +810,7 @@ export component AppWindow inherits Window {
                     // Таблица упаковок — карточки
                     Rectangle {
                         vertical-stretch: 1;
-                        min-height: 100px;
+                        min-height: 70px;
                         border-radius: 12px;
                         background: Theme.panel;
                         border-width: 1px;
@@ -831,13 +864,17 @@ export component AppWindow inherits Window {
                                                 width: 52px;
                                                 height: 58px;
                                                 border-radius: 6px;
-                                                background: Theme.panel;
+                                                background: pta.has-hover ? Theme.accent-tint-soft : Theme.panel;
                                                 border-width: 1px;
-                                                border-color: Theme.hairline;
+                                                border-color: pta.has-hover ? Theme.accent : Theme.hairline;
+                                                pta := TouchArea {
+                                                    mouse-cursor: pointer;
+                                                    clicked => { root.pkg-replace-photo(p.id); }
+                                                }
                                                 Text {
                                                     width: 100%;
-                                                    text: "фото\nнедоступно";
-                                                    font-size: 9px;
+                                                    text: "фото\nнедоступно.\nКлик —\nзаменить";
+                                                    font-size: 8px;
                                                     color: Theme.muted;
                                                     horizontal-alignment: center;
                                                     vertical-alignment: center;
@@ -867,6 +904,7 @@ export component AppWindow inherits Window {
                                                         text: p.price;
                                                         font-size: 12px;
                                                         vertical-alignment: center;
+                                                        overflow: elide;
                                                         color: Theme.muted;
                                                     }
                                                     Badge {
@@ -896,8 +934,20 @@ export component AppWindow inherits Window {
                                                 HorizontalLayout {
                                                     spacing: 6px;
                                                     if (!p.disposed && !p.opened): GhostButton {
-                                                        label: "Открыть";
-                                                        clicked => { root.pkg-open(p.id); }
+                                                        // открытие одним кликом отмечает
+                                                        // упаковку вскрытой «навсегда»
+                                                        // (кнопки «не открыт» в UI нет) —
+                                                        // поэтому двухшагово
+                                                        label: root.pkg-open-armed == p.id ? "Точно открыть?" : "Открыть";
+                                                        clicked => {
+                                                            if (root.pkg-open-armed == p.id) {
+                                                                root.pkg-open-armed = -1;
+                                                                root.pkg-open(p.id);
+                                                            } else {
+                                                                root.pkg-open-armed = p.id;
+                                                                root.pkg-delete-armed = -1;
+                                                            }
+                                                        }
                                                     }
                                                     if (!p.disposed && p.opened): GhostButton {
                                                         label: "Израсходовано";
@@ -923,9 +973,21 @@ export component AppWindow inherits Window {
                                                         clicked => { root.pkg-restore(p.id); }
                                                     }
                                                     GhostButton {
-                                                        label: p.disposed ? "Удалить навсегда" : "Удалить";
+                                                        // удаление — как у лекарства:
+                                                        // два нажатия, между ними
+                                                        // кнопка меняет текст
+                                                        label: root.pkg-delete-armed == p.id ? "Точно удалить?"
+                                                            : p.disposed ? "Удалить навсегда" : "Удалить";
                                                         danger: true;
-                                                        clicked => { root.pkg-delete(p.id); }
+                                                        clicked => {
+                                                            if (root.pkg-delete-armed == p.id) {
+                                                                root.pkg-delete-armed = -1;
+                                                                root.pkg-delete(p.id);
+                                                            } else {
+                                                                root.pkg-delete-armed = p.id;
+                                                                root.pkg-open-armed = -1;
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -972,16 +1034,18 @@ export component AppWindow inherits Window {
                                 color: root.pkg-editing ? Theme.accent : Theme.text;
                             }
 
+                            // Две строки по три поля: шесть полей в ряд шире панели
+                            // и обрезаются на узких окнах.
                             HorizontalLayout {
                                 spacing: 10px;
                                 VerticalLayout {
                                     spacing: 3px;
-                                    width: 245px;
+                                    horizontal-stretch: 2;
                                     FieldLabel { text: "Срок годности"; }
                                     HorizontalLayout {
                                         spacing: 4px;
                                         expiry-edit := LineEdit {
-                                            width: 200px;
+                                            horizontal-stretch: 1;
                                             text <=> root.pkg-expiry;
                                             placeholder-text: "ГГГГ-ММ-ДД, ДД.ММ.ГГГГ или ММ.ГГГГ";
                                             edited(text) => { root.pkg-expiry-edited(text); }
@@ -1074,7 +1138,7 @@ export component AppWindow inherits Window {
                                 }
                                 VerticalLayout {
                                     spacing: 3px;
-                                    width: 140px;
+                                    horizontal-stretch: 1;
                                     FieldLabel { text: "Количество"; }
                                     LineEdit {
                                         text <=> root.pkg-quantity;
@@ -1083,7 +1147,7 @@ export component AppWindow inherits Window {
                                 }
                                 VerticalLayout {
                                     spacing: 3px;
-                                    width: 130px;
+                                    horizontal-stretch: 1;
                                     FieldLabel { text: "Цена, руб."; }
                                     LineEdit {
                                         text <=> root.pkg-price;
@@ -1091,9 +1155,13 @@ export component AppWindow inherits Window {
                                         edited(text) => { root.pkg-form-edited(); }
                                     }
                                 }
+                            }
+
+                            HorizontalLayout {
+                                spacing: 10px;
                                 VerticalLayout {
                                     spacing: 3px;
-                                    width: 130px;
+                                    horizontal-stretch: 1;
                                     FieldLabel { text: "После вскрытия, дн."; }
                                     LineEdit {
                                         text <=> root.pkg-period;
@@ -1103,7 +1171,7 @@ export component AppWindow inherits Window {
                                 }
                                 VerticalLayout {
                                     spacing: 3px;
-                                    width: 130px;
+                                    horizontal-stretch: 1;
                                     FieldLabel { text: "Куплена"; }
                                     LineEdit {
                                         text <=> root.pkg-purchase-date;
@@ -1113,7 +1181,7 @@ export component AppWindow inherits Window {
                                 }
                                 VerticalLayout {
                                     spacing: 3px;
-                                    horizontal-stretch: 1;
+                                    horizontal-stretch: 2;
                                     alignment: end;
                                     FieldLabel { text: "Комментарий"; }
                                     LineEdit {
@@ -1215,7 +1283,21 @@ export component AppWindow inherits Window {
         }
 
         // ===== Статусная строка =====
-        HorizontalLayout {
+        VerticalLayout {
+            spacing: 2px;
+            vertical-stretch: 0;
+
+            // Ошибка — отдельной строкой с переносом: длинный текст (путь,
+            // причина I/O) читается целиком и держится, пока не появится
+            // следующая успешная операция (её сообщение вернётся в строку ниже)
+            if (root.save-error): Text {
+                text: root.status-message;
+                font-size: 12px;
+                wrap: word-wrap;
+                color: Theme.danger-text;
+            }
+
+            HorizontalLayout {
             spacing: 8px;
             vertical-stretch: 0;
             Text {
@@ -1288,7 +1370,10 @@ export component AppWindow inherits Window {
                 vertical-alignment: center;
                 overflow: elide;
                 horizontal-stretch: 2;
-                color: root.save-error ? Theme.danger-text : Theme.muted;
+                // пока ошибка показана строкой выше, здесь её не дублируем
+                visible: !root.save-error;
+                color: Theme.muted;
+            }
             }
         }
         }
@@ -1298,8 +1383,10 @@ export component AppWindow inherits Window {
 // ===== Окно отчётов: списания и покупки по годам =====
 export component ReportWindow inherits Window {
     title: "Отчёты";
-    width: 560px;
-    height: 520px;
+    min-width: 420px;
+    min-height: 320px;
+    preferred-width: 560px;
+    preferred-height: 520px;
     in-out property <[string]> lines;
     callback close-clicked();
 
@@ -1368,8 +1455,10 @@ export component ReportWindow inherits Window {
 // ===== Окно журнала событий =====
 export component JournalWindow inherits Window {
     title: "Журнал событий";
-    width: 680px;
-    height: 480px;
+    min-width: 480px;
+    min-height: 320px;
+    preferred-width: 680px;
+    preferred-height: 480px;
     in-out property <[string]> events;
     callback close-clicked();
 
@@ -1438,8 +1527,10 @@ export component JournalWindow inherits Window {
 // ===== Окно «Что купить» =====
 export component ShoppingWindow inherits Window {
     title: "Что купить";
-    width: 580px;
-    height: 440px;
+    min-width: 420px;
+    min-height: 300px;
+    preferred-width: 580px;
+    preferred-height: 440px;
     in-out property <[string]> lines;
     in-out property <string> note;
     callback copy-to-clipboard();
@@ -1516,8 +1607,10 @@ export component ShoppingWindow inherits Window {
 // ===== Окно резервных копий =====
 export component BackupsWindow inherits Window {
     title: "Резервные копии";
-    width: 640px;
-    height: 440px;
+    min-width: 480px;
+    min-height: 360px;
+    preferred-width: 640px;
+    preferred-height: 440px;
     in-out property <[string]> rows;
     in-out property <int> selected: -1;
     in-out property <string> note;
@@ -1616,8 +1709,10 @@ export component BackupsWindow inherits Window {
 // ===== Окно импорта CSV =====
 export component ImportWindow inherits Window {
     title: "Импорт CSV";
-    width: 640px;
-    height: 440px;
+    min-width: 480px;
+    min-height: 360px;
+    preferred-width: 640px;
+    preferred-height: 440px;
     in-out property <[string]> rows;
     in-out property <int> selected: -1;
     in-out property <string> note;

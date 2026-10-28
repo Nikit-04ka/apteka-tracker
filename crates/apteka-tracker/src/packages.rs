@@ -74,6 +74,12 @@ pub(crate) fn rebuild_packages(ui: &AppWindow, st: &UiState) {
                     None => {
                         match slint::Image::load_from_path(&storage::photos_dir().join(&p.photo)) {
                             Ok(img) => {
+                                // предохранитель RAM: за долгую сессию просмотренных
+                                // фото может набраться много — сбрасываем целиком
+                                // (декод дешёвый, миниатюра читается с диска заново)
+                                if cache.len() >= PHOTO_CACHE_CAP {
+                                    cache.clear();
+                                }
                                 cache.insert(p.photo.clone(), img.clone());
                                 (img, false)
                             }
@@ -208,6 +214,7 @@ pub(crate) fn validate_pkg_form(ui: &AppWindow, st: &UiState) {
 /// Регистрирует колбэки формы упаковки и её жизненного цикла (F6).
 pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>) {
     with_state!(ui, state, on_pkg_start_edit, |ui, mut st, pid| {
+        disarm_delete(&ui);
         let found = st
             .selected()
             .and_then(|m| m.packages.iter().find(|p| p.id == pid))
@@ -246,20 +253,24 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
     });
 
     with_state!(ui, state, on_pkg_cancel_edit, |ui, mut st| {
+        disarm_delete(&ui);
         reset_pkg_form(&ui, &mut st);
     });
 
     with_state!(ui, state, on_pkg_expiry_edited, |ui, st, _text| {
+        disarm_delete(&ui);
         validate_pkg_form(&ui, &st);
     });
 
     // Живая валидация остальных полей формы (цена, период, «Куплена»):
     // иначе кнопка сохранения устаревает и молча ничего не делает.
     with_state!(ui, state, on_pkg_form_edited, |ui, st| {
+        disarm_delete(&ui);
         validate_pkg_form(&ui, &st);
     });
 
     with_state!(ui, state, on_pkg_quick, |ui, st, months| {
+        disarm_delete(&ui);
         if let Some(d) = today().checked_add_months(Months::new(months.max(0) as u32)) {
             ui.set_pkg_expiry(SharedString::from(fmt_date(d)));
             validate_pkg_form(&ui, &st);
@@ -267,6 +278,7 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
     });
 
     with_state!(ui, state, on_pkg_clone, |ui, mut st, pid| {
+        disarm_delete(&ui);
         // Новая упаковка с теми же количеством/ценой/комментарием и сроком «сегодня + 1 год».
         let found = st
             .selected()
@@ -293,12 +305,17 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
         // «Куплена» не копируется: дата покупки относится к исходной пачке и
         // не должна утекать в новый пакет (она искажает отчёт «Покупки по годам»)
         ui.set_pkg_purchase_date(SharedString::new());
+        // фото, выбранное для прежней формы, не переезжает на клон —
+        // как и в on_pkg_start_edit
+        st.pending_photo = None;
+        ui.set_pending_photo(false);
         st.pkg_edit_id = -1;
         ui.set_pkg_editing(false);
         validate_pkg_form(&ui, &st);
     });
 
     with_state!(ui, state, on_pkg_save, |ui, mut st| {
+        disarm_delete(&ui);
         // Разобранная форма — единая точка «форма ↔ Package»: поля не
         // присваиваются поштучно. Кнопка сохранения активна только после живой
         // валидации, так что Err здесь почти недостижим.
@@ -348,29 +365,45 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
             pid => {
                 if let Some(m) = st.domain.db.medicine_mut(sel) {
                     if let Some(p) = m.packages.iter_mut().find(|p| p.id == pid) {
-                        form.apply_to(p);
-                        journal_note = Some((m.name.clone(), pkg_desc(p)));
+                        // правка без изменений — не мутация: не создаём фиктивный
+                        // шаг истории и событие журнала (как и on_form_selected)
+                        if !form.matches(p) {
+                            form.apply_to(p);
+                            journal_note = Some((m.name.clone(), pkg_desc(p)));
+                        }
                     }
                 }
             }
         }
-        if let Some((name, pdesc)) = journal_note {
+        if let Some((name, pdesc)) = &journal_note {
             let kind = if edit_id >= 0 {
                 "изменена упаковка"
             } else {
                 "добавлена упаковка"
             };
-            st.domain.db.journal_push(kind, &name, &pdesc);
+            st.domain.db.journal_push(kind, name, pdesc);
         }
         reset_pkg_form(&ui, &mut st);
-        commit_refresh_persist(&ui, &mut st, prev, false);
+        if journal_note.is_some() {
+            commit_refresh_persist(&ui, &mut st, prev, false);
+        } else {
+            set_status_info(&ui, "Изменений нет — упаковка осталась прежней".to_string());
+        }
         if let Some(e) = photo_error {
             // упаковка сохранена, но фото не прикрепилось — честно сообщаем
-            ui.set_status_message(SharedString::from(format!("Упаковка сохранена, но {e}")));
+            // и говорим, как прикрепить позже
+            report_error(
+                &ui,
+                format!(
+                    "Упаковка сохранена, но {e}. Прикрепить фото позже: \
+                     кнопка «Изменить» → «Фото…»"
+                ),
+            );
         }
     });
 
     with_state!(ui, state, on_pkg_delete, |ui, mut st, pid| {
+        disarm_delete(&ui);
         let prev = st.domain.db.clone();
         let mut jnote: Option<(String, String)> = None;
         if let Some(m) = st.selected_mut() {
@@ -379,8 +412,8 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
             }
             m.packages.retain(|p| p.id != pid);
         }
-        if let Some((n, d)) = jnote {
-            st.domain.db.journal_push("упаковка удалена", &n, &d);
+        if let Some((n, d)) = &jnote {
+            st.domain.db.journal_push("упаковка удалена", n, d);
         }
         // удалили упаковку, которая была в редактировании, — форма возвращается
         // в режим «новая упаковка»: иначе кнопка «Сохранить» создала бы дубль
@@ -389,6 +422,11 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
             st.pkg_edit_id = -1;
         }
         commit_refresh_persist(&ui, &mut st, prev, was_editing);
+        if let Some((n, d)) = jnote {
+            // подтверждение с путём возврата: удаление двухшаговое, но факт
+            // и способ отката стоит назвать словами
+            set_status_info(&ui, format!("Удалено: {n} ({d}) — вернуть: Ctrl+Z"));
+        }
     });
 
     with_state!(ui, state, on_export_csv, |ui, st| {
@@ -397,13 +435,20 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
                 "Экспортировано: {}",
                 exported.display()
             ))),
-            Err(e) => ui.set_status_message(SharedString::from(format!("Ошибка экспорта: {e}"))),
+            Err(e) => report_error(
+                &ui,
+                format!(
+                    "Ошибка экспорта: {e}. Проверьте, что файл не открыт в Excel, \
+                     и что папка программы доступна для записи"
+                ),
+            ),
         }
     });
 
     // ===== Жизненный цикл упаковки: открытие, списание, возврат =====
 
     with_state!(ui, state, on_pkg_open, |ui, mut st, pid| {
+        disarm_delete(&ui);
         let prev = st.domain.db.clone();
         let mut jnote: Option<(String, String)> = None;
         if let Some(m) = st.selected_mut() {
@@ -423,10 +468,17 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
         if let Some((n, d)) = jnote {
             st.domain.db.journal_push("упаковка открыта", &n, &d);
             commit_refresh_persist(&ui, &mut st, prev, false);
+            // обратной кнопки «не открыта» нет (кнопки карточки и так на пределе
+            // ширины окна) — rollback через Ctrl+Z, говорим о нём сразу
+            set_status_info(
+                &ui,
+                "Упаковка отмечена открытой сегодня — отменить: Ctrl+Z".to_string(),
+            );
         }
     });
 
     with_state!(ui, state, on_pkg_dispose, |ui, mut st, pid, reason| {
+        disarm_delete(&ui);
         let prev = st.domain.db.clone();
         let mut jnote: Option<(String, String)> = None;
         if let Some(m) = st.selected_mut() {
@@ -452,6 +504,7 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
     });
 
     with_state!(ui, state, on_pkg_restore, |ui, mut st, pid| {
+        disarm_delete(&ui);
         let prev = st.domain.db.clone();
         let mut jnote: Option<(String, String)> = None;
         if let Some(m) = st.selected_mut() {

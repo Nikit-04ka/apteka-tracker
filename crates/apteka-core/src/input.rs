@@ -122,6 +122,18 @@ impl PackageForm {
         }
     }
 
+    /// Совпадают ли поля формы с упаковкой (те же, что трогает `apply_to`).
+    /// Правка без изменений не должна создавать шаг истории и событие журнала.
+    pub fn matches(&self, p: &Package) -> bool {
+        self.expiry == p.expiry
+            && self.month_only == p.month_only
+            && self.quantity == p.quantity
+            && self.note == p.note
+            && self.price == p.price
+            && self.open_period_days == p.open_period_days
+            && self.purchase_date == p.purchase_date
+    }
+
     /// Правка существующей упаковки: обновляются только поля формы —
     /// id, вскрытие, списание и фото не трогаются.
     pub fn apply_to(&self, p: &mut Package) {
@@ -132,6 +144,26 @@ impl PackageForm {
         p.price = self.price;
         p.open_period_days = self.open_period_days;
         p.purchase_date = self.purchase_date;
+    }
+}
+
+/// Строка haystack для поиска: поля через пробел. Собирается в переиспользуемый
+/// буфер без аллокаций; приведение к нижнему регистру (1 аллокация) — у
+/// вызывающего. Старый вариант аллоцировал три строки на лекарство на каждый
+/// символ поиска.
+fn fill_hay(hay: &mut String, m: &Medicine) {
+    hay.clear();
+    hay.push_str(&m.name);
+    hay.push(' ');
+    hay.push_str(&m.form);
+    hay.push(' ');
+    hay.push_str(&m.note);
+    hay.push(' ');
+    for (i, t) in m.tags.iter().enumerate() {
+        if i > 0 {
+            hay.push(' ');
+        }
+        hay.push_str(t);
     }
 }
 
@@ -147,7 +179,7 @@ pub fn all_tags(db: &Database) -> Vec<String> {
             }
         }
     }
-    out.sort_by_key(|a| a.to_lowercase());
+    out.sort_by_cached_key(|a| a.to_lowercase());
     out
 }
 
@@ -169,11 +201,13 @@ pub fn visible_medicines<'a>(
     let warn = db.warn_days as i64;
     let needle = search.trim().to_lowercase();
     let mut rows: Vec<(&Medicine, MedInfo)> = Vec::new();
+    // haystack собирается в переиспользуемый буфер; регистр приводится один раз
+    // на лекарство (1 аллокация вместо трёх на каждый символ поиска)
+    let mut hay = String::new();
     for m in &db.medicines {
         if !needle.is_empty() {
-            let hay =
-                format!("{} {} {} {}", m.name, m.form, m.note, m.tags.join(" ")).to_lowercase();
-            if !hay.contains(&needle) {
+            fill_hay(&mut hay, m);
+            if !hay.to_lowercase().contains(&needle) {
                 continue;
             }
         }
@@ -193,11 +227,13 @@ pub fn visible_medicines<'a>(
         rows.push((m, info));
     }
     match sort_idx {
-        0 => rows.sort_by_key(|(m, info)| {
+        // sort_by_cached_key: ключ (с аллокацией to_lowercase) вычисляется
+        // один раз на элемент, а не на каждом сравнении (sort_by_key)
+        0 => rows.sort_by_cached_key(|(m, info)| {
             let key = info.nearest.map(|_| info.nearest_days).unwrap_or(i64::MAX);
             (key, m.name.to_lowercase())
         }),
-        _ => rows.sort_by_key(|a| a.0.name.to_lowercase()),
+        _ => rows.sort_by_cached_key(|a| a.0.name.to_lowercase()),
     }
     rows
 }
@@ -247,6 +283,7 @@ pub fn cal_grid(year: i32, month: u32, today: NaiveDate) -> Option<Vec<Vec<CalCe
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn d(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
@@ -354,6 +391,50 @@ mod tests {
     }
 
     #[test]
+    fn package_form_matches_mirrors_apply_to_fields() {
+        let mut p = pkg();
+        // форма, повторяющая все поля формы упаковки (включая «Куплена»)
+        let same = PackageForm::parse(
+            "2027-01-01",
+            "старое",
+            "старая заметка",
+            "100",
+            "30",
+            "2026-09-20",
+        )
+        .unwrap();
+        assert!(same.matches(&p), "все поля формы совпадают");
+        // жизненный цикл (вскрытие, списание, фото) совпадение не определяет
+        p.opened = None;
+        p.disposed = None;
+        p.photo = String::new();
+        assert!(same.matches(&p), "жизненный цикл не влияет на совпадение");
+        // любое поле формы делает форму «изменённой»
+        for f in [
+            form("2028-05-10", "", ""),
+            form("2027-01-01", "12", ""),
+            PackageForm::parse("2027-01-01", "иное", "", "100", "30", "2026-09-20").unwrap(),
+            PackageForm::parse("2027-01-01", "старое", "иная", "100", "30", "2026-09-20").unwrap(),
+            PackageForm::parse(
+                "2027-01-01",
+                "старое",
+                "старая заметка",
+                "100",
+                "",
+                "2026-09-20",
+            )
+            .unwrap(),
+            PackageForm::parse("2027-01-01", "старое", "старая заметка", "100", "30", "").unwrap(),
+        ] {
+            assert!(!f.matches(&p), "изменённая форма не должна совпадать");
+        }
+        // после применения форма совпадает с упаковкой
+        let other = form("2028-05-10", "", "");
+        other.apply_to(&mut p);
+        assert!(other.matches(&p));
+    }
+
+    #[test]
     fn package_form_into_package_starts_fresh() {
         let p = form("01.2028", "12", "30").into_package(42);
         assert_eq!(p.id, 42);
@@ -409,7 +490,7 @@ mod tests {
         assert!(!grid[4][6].2);
     }
 
-    fn vm_med(id: i32, name: &str, form: &str, note: &str, in_days: Option<i64>) -> Medicine {
+    fn vm_med(id: i32, name: &str, form: &str, note: &str, in_days: Option<i64>) -> Arc<Medicine> {
         let packages = match in_days {
             None => Vec::new(),
             Some(n) => vec![Package {
@@ -426,14 +507,14 @@ mod tests {
                 photo: String::new(),
             }],
         };
-        Medicine {
+        Arc::new(Medicine {
             id,
             name: name.to_string(),
             form: form.to_string(),
             note: note.to_string(),
             tags: Vec::new(),
             packages,
-        }
+        })
     }
 
     fn vm_db() -> Database {
@@ -507,7 +588,7 @@ mod tests {
     fn visible_search_matches_tags() {
         let today = d("2026-10-20");
         let mut db = vm_db();
-        db.medicines[1].tags = vec!["обезболивающее".to_string()];
+        db.medicine_mut(2).unwrap().tags = vec!["обезболивающее".to_string()];
         let names: Vec<String> = visible_medicines(&db, "обезбол", None, 0, 0, today)
             .into_iter()
             .map(|(m, _)| m.name.clone())
@@ -519,8 +600,8 @@ mod tests {
     fn visible_filter_by_tag() {
         let today = d("2026-10-20");
         let mut db = vm_db();
-        db.medicines[0].tags = vec!["Жаропонижающее".to_string()];
-        db.medicines[2].tags = vec!["жаропонижающее".to_string()];
+        db.medicine_mut(1).unwrap().tags = vec!["Жаропонижающее".to_string()];
+        db.medicine_mut(3).unwrap().tags = vec!["жаропонижающее".to_string()];
         assert_eq!(
             all_tags(&db),
             vec!["Жаропонижающее"],

@@ -1,7 +1,7 @@
 //! Экспорт и импорт CSV: формат программы (разделитель «;», BOM, экранирование кавычек).
 use crate::model::{
     days_left, dispose_reason_text, fmt_date, fmt_date_display, parse_date_input, parse_tags,
-    status_for, status_text, Database, DisposedInfo, Medicine, Package, REASON_EXPIRED,
+    status_for, status_text, Database, DisposedInfo, Medicine, Package, REASON_DISCARDED,
     REASON_USED, STATUS_DISPOSED,
 };
 use crate::storage::exe_dir;
@@ -169,15 +169,16 @@ fn parse_opened_cell(s: &str) -> Option<chrono::NaiveDate> {
 }
 
 /// Разбор ячейки «Списано» экспортного формата: «израсходовано 01.10.2026»,
-/// «просрочено, выброшено 01.10.2026». Неизвестная причина трактуется
-/// как «выброшено» — обе штатные причины переживают round-trip точно.
+/// «выброшено 01.10.2026». Старый текст прежних версий («просрочено,
+/// выброшено …») и любая неизвестная причина трактуется как «выброшено» —
+/// обе штатные причины переживают round-trip точно.
 fn parse_disposed_cell(s: &str) -> Option<DisposedInfo> {
     let (reason_text, date_text) = s.trim().rsplit_once(' ')?;
     let (date, _) = parse_date_input(date_text.trim())?;
     let reason = if reason_text.trim() == dispose_reason_text(REASON_USED) {
         REASON_USED
     } else {
-        REASON_EXPIRED
+        REASON_DISCARDED
     };
     Some(DisposedInfo { date, reason })
 }
@@ -223,11 +224,12 @@ fn merge_medicine(
 /// пропускается целиком — повторный импорт того же CSV не плодит дубли.
 /// Возвращает (оставленные лекарства, сколько отброшено как дубли).
 pub fn dedup_imported(
-    existing: &[Medicine],
+    existing: &[impl std::borrow::Borrow<Medicine>],
     mut imported: Vec<Medicine>,
 ) -> (Vec<Medicine>, usize) {
     let key = |m: &Medicine| (m.name.trim().to_lowercase(), m.form.trim().to_lowercase());
-    let mut seen: std::collections::HashSet<(String, String)> = existing.iter().map(key).collect();
+    let mut seen: std::collections::HashSet<(String, String)> =
+        existing.iter().map(|m| key(m.borrow())).collect();
     let mut duplicates = 0usize;
     imported.retain(|m| {
         let k = key(m);
@@ -339,6 +341,7 @@ pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -358,7 +361,7 @@ mod tests {
             warn_days: 45,
             ..Default::default()
         };
-        db.medicines.push(Medicine {
+        db.medicines.push(Arc::new(Medicine {
             id: 1,
             name: "Парацетамол \"Тева\"".to_string(),
             form: "Таблетки".to_string(),
@@ -392,7 +395,7 @@ mod tests {
                     photo: String::new(),
                 },
             ],
-        });
+        }));
         db
     }
 
@@ -500,14 +503,14 @@ mod tests {
         let dir = temp_dir("lifecycle");
         let path = dir.join("export.csv");
         let mut db = sample_db();
-        db.medicines[0].packages.push(lifecycle_pkg(
+        db.medicine_mut(1).unwrap().packages.push(lifecycle_pkg(
             3,
             (2030, 6, 1),
             Some((2026, 10, 1)),
             Some(30),
             None,
         ));
-        db.medicines[0].packages.push(lifecycle_pkg(
+        db.medicine_mut(1).unwrap().packages.push(lifecycle_pkg(
             4,
             (2026, 1, 1),
             None,
@@ -535,9 +538,40 @@ mod tests {
     fn disposed_cell_parses_both_reasons() {
         let used = parse_disposed_cell("израсходовано 01.10.2026").unwrap();
         assert_eq!(used.reason, REASON_USED);
-        let tossed = parse_disposed_cell("просрочено, выброшено 01.10.2026").unwrap();
-        assert_eq!(tossed.reason, REASON_EXPIRED);
+        let tossed = parse_disposed_cell("выброшено 01.10.2026").unwrap();
+        assert_eq!(tossed.reason, REASON_DISCARDED);
+        // текст прежних версий («просрочено, выброшено …») читается как «выброшено»
+        let legacy = parse_disposed_cell("просрочено, выброшено 01.10.2026").unwrap();
+        assert_eq!(legacy.reason, REASON_DISCARDED);
         assert_eq!(parse_disposed_cell("мусор"), None);
+    }
+
+    #[test]
+    fn disposed_reason_text_roundtrips_through_export_import() {
+        // «выброшено» (без утверждения просрочки) переживает экспорт/импорт
+        let dir = temp_dir("reason");
+        let path = dir.join("export.csv");
+        let mut db = sample_db();
+        db.medicine_mut(1).unwrap().packages.push(lifecycle_pkg(
+            3,
+            (2026, 1, 1),
+            None,
+            None,
+            Some((2026, 10, 5, REASON_DISCARDED)),
+        ));
+        export_csv_to(&db, &path).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("выброшено 05.10.2026"),
+            "причина без ложного «просрочено»"
+        );
+        let (meds, _) = import_csv(&path).unwrap();
+        assert_eq!(
+            meds[0].packages[2].disposed.as_ref().unwrap().reason,
+            REASON_DISCARDED,
+            "причина переживает round-trip"
+        );
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
@@ -571,14 +605,14 @@ mod tests {
         let dir = temp_dir("nopkg");
         let path = dir.join("export.csv");
         let mut db = Database::default();
-        db.medicines.push(Medicine {
+        db.medicines.push(Arc::new(Medicine {
             id: 1,
             name: "Пустышка".to_string(),
             form: "Прочее".to_string(),
             note: "без упаковок".to_string(),
             tags: vec!["запас".to_string()],
             packages: Vec::new(),
-        });
+        }));
         export_csv_to(&db, &path).unwrap();
         let (meds, skipped) = import_csv(&path).unwrap();
         assert_eq!(skipped, 0, "строка без упаковок — не мусор");
@@ -600,14 +634,14 @@ mod tests {
             .iter()
             .enumerate()
         {
-            db.medicines.push(Medicine {
+            db.medicines.push(Arc::new(Medicine {
                 id: i as i32 + 1,
                 name: (*name).to_string(),
                 form: "Таблетки".to_string(),
                 note: String::new(),
                 tags: Vec::new(),
                 packages: Vec::new(),
-            });
+            }));
         }
         export_csv_to(&db, &path).unwrap();
         let text = fs::read_to_string(&path).unwrap();
@@ -639,7 +673,7 @@ mod tests {
             warn_days: db.warn_days,
             ..Default::default()
         };
-        db2.medicines = meds;
+        db2.medicines = meds.into_iter().map(Arc::new).collect();
         export_csv_to(&db2, &p2).unwrap();
         assert_eq!(
             fs::read_to_string(&p1).unwrap(),
@@ -697,8 +731,14 @@ mod tests {
         // новые упаковки у уже известного лекарства тоже не проходят
         let mut more = sample_db();
         let extra = more.medicines[0].packages[0].clone();
-        more.medicines[0].packages.push(extra);
-        let (kept2, dups2) = dedup_imported(&sample_db().medicines, more.medicines);
+        more.medicine_mut(1).unwrap().packages.push(extra);
+        let (kept2, dups2) = dedup_imported(
+            &sample_db().medicines,
+            more.medicines
+                .into_iter()
+                .map(Arc::unwrap_or_clone)
+                .collect(),
+        );
         assert!(
             kept2.is_empty(),
             "лекарство отбрасывается вместе со всеми упаковками"

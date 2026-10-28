@@ -4,7 +4,9 @@
 apteka_data.json
 apteka_export.csv
 apteka_crash.log
+apteka_data.json.corrupt-*
 settings.json
 photos/
 apteka.lock
 backups/
+.opencode/

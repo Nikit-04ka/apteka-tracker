@@ -34,6 +34,34 @@ pub fn backup() -> io::Result<Option<PathBuf>> {
     backup_from_to(&data_file_path(), &backup_dir(), 5)
 }
 
+/// Стартовый бэкап один раз в сутки: если свежайшая копия за сегодня не старше
+/// файла данных — новая не создаётся. Иначе несколько запусков за день
+/// вытесняют ротацией (keep=5) копии прошлых дней — глубина восстановления
+/// теряется. Проверка mtime нужна для документированного сценария ручной
+/// правки файла: изменённое после утренней копии состояние должно уйти в
+/// бэкап до того, как приложение его перезапишет.
+pub fn backup_daily() -> io::Result<Option<PathBuf>> {
+    backup_daily_from_to(&data_file_path(), &backup_dir(), 5)
+}
+
+/// То же с явными путями — для тестов.
+pub fn backup_daily_from_to(src: &Path, dir: &Path, keep: usize) -> io::Result<Option<PathBuf>> {
+    let today_prefix = format!("apteka_{}-", Local::now().format("%Y%m%d"));
+    if let Some(newest) = list_backups_in(dir).first() {
+        let named_today = newest
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with(&today_prefix));
+        let backup_mtime = fs::metadata(newest).and_then(|m| m.modified());
+        let data_mtime = fs::metadata(src).and_then(|m| m.modified());
+        let backup_covers_data = matches!((backup_mtime, data_mtime), (Ok(b), Ok(d)) if b >= d);
+        if named_today && backup_covers_data {
+            return Ok(None);
+        }
+    }
+    backup_from_to(src, dir, keep)
+}
+
 /// Копирует `src` в каталог `dir` под именем с меткой времени и оставляет
 /// только `keep` самых свежих копий.
 pub fn backup_from_to(src: &Path, dir: &Path, keep: usize) -> io::Result<Option<PathBuf>> {
@@ -41,12 +69,19 @@ pub fn backup_from_to(src: &Path, dir: &Path, keep: usize) -> io::Result<Option<
         return Ok(None);
     }
     fs::create_dir_all(dir)?;
-    // Метка времени с миллисекундами: две копии в одну секунду не сливаются.
-    let stamp = Local::now().format("%Y%m%d-%H%M%S-%3f");
-    let dst = dir.join(format!("apteka_{stamp}.json"));
+    let dst = dir.join(backup_file_name());
     fs::copy(src, &dst)?;
     rotate_backups(dir, keep);
     Ok(Some(dst))
+}
+
+/// Имя файла бэкапа: метка времени плюс счётчик процесса — две копии в одну
+/// миллисекунду не сливаются в один файл (как и у фото: `unique_photo_name`).
+fn backup_file_name() -> String {
+    static SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let stamp = Local::now().format("%Y%m%d-%H%M%S-%3f");
+    format!("apteka_{stamp}-{n:03}.json")
 }
 
 /// Это резервная копия (`apteka_*.json`), а не посторонний файл пользователя.
@@ -58,7 +93,8 @@ fn is_backup_file(p: &Path) -> bool {
 }
 
 /// Удаляет самые старые резервные копии, оставляя `keep` последних.
-/// Имена вида `apteka_YYYYMMDD-HHMMSS[-мс].json` сортируются хронологически.
+/// Имена вида `apteka_YYYYMMDD-HHMMSS-мс-NNN.json` сортируются хронологически
+/// (счётчик NNN отличает копии одной миллисекунды).
 /// Посторонние файлы в каталоге (не `apteka_*.json`) не трогаются.
 pub fn rotate_backups(dir: &Path, keep: usize) {
     let mut files: Vec<PathBuf> = match fs::read_dir(dir) {
@@ -80,8 +116,12 @@ pub fn rotate_backups(dir: &Path, keep: usize) {
 
 /// Список резервных копий, самые свежие первыми.
 pub fn list_backups() -> Vec<PathBuf> {
-    let dir = backup_dir();
-    let mut files: Vec<PathBuf> = match fs::read_dir(&dir) {
+    list_backups_in(&backup_dir())
+}
+
+/// То же с явным каталогом — для тестов и `backup_daily_from_to`.
+pub fn list_backups_in(dir: &Path) -> Vec<PathBuf> {
+    let mut files: Vec<PathBuf> = match fs::read_dir(dir) {
         Ok(rd) => rd.filter_map(|e| e.ok().map(|e| e.path())).collect(),
         Err(_) => return Vec::new(),
     };
@@ -244,6 +284,7 @@ mod tests {
     use super::*;
     use crate::model::{Medicine, Package};
     use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::Arc;
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -264,7 +305,7 @@ mod tests {
             warn_days: 45,
             ..Default::default()
         };
-        db.medicines.push(Medicine {
+        db.medicines.push(Arc::new(Medicine {
             id: 1,
             name: "Парацетамол \"Тева\"".to_string(),
             form: "Таблетки".to_string(),
@@ -299,7 +340,7 @@ mod tests {
                     photo: String::new(),
                 },
             ],
-        });
+        }));
         db
     }
 
@@ -365,7 +406,7 @@ mod tests {
         fs::write(photos.join("pkg_8.PNG"), "c").unwrap();
         fs::write(photos.join("notes.txt"), "d").unwrap();
         let mut db = sample_db();
-        db.medicines[0].packages[0].photo = "pkg_1.png".to_string();
+        db.medicine_mut(1).unwrap().packages[0].photo = "pkg_1.png".to_string();
         let removed = cleanup_orphan_photos_in(&photos, &db);
         assert_eq!(removed, 2, "удалены только сироты pkg_*");
         assert!(
@@ -495,6 +536,13 @@ mod tests {
     }
 
     #[test]
+    fn backup_names_unique_even_within_same_millisecond() {
+        // счётчик в имени: две копии, созданные в одну миллисекунду,
+        // не должны сливаться в один файл (fs::copy молча перезаписал бы)
+        assert_ne!(backup_file_name(), backup_file_name());
+    }
+
+    #[test]
     fn backup_names_do_not_collide_within_same_second() {
         // F16: две копии подряд не сливаются в одну (метка времени с миллисекундами)
         let dir = temp_dir("backup-stamp");
@@ -505,6 +553,60 @@ mod tests {
         let b = backup_from_to(&src, &bdir, 5).unwrap().unwrap();
         assert_ne!(a, b, "имена двух подряд созданных копий различны");
         assert_eq!(fs::read_dir(&bdir).unwrap().count(), 2);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn backup_daily_skips_second_copy_same_day() {
+        // несколько запусков за день не должны вытеснять ротацией копии
+        // прошлых дней: свежайшая копия за сегодня уже есть → новая не создаётся
+        let dir = temp_dir("backup-daily");
+        let src = dir.join("apteka_data.json");
+        save_to(&sample_db(), &src).unwrap();
+        let bdir = dir.join("backups");
+        assert!(
+            backup_daily_from_to(&src, &bdir, 5).unwrap().is_some(),
+            "первый запуск за день делает копию"
+        );
+        assert!(
+            backup_daily_from_to(&src, &bdir, 5).unwrap().is_none(),
+            "второй запуск за день — копия уже есть"
+        );
+        assert_eq!(fs::read_dir(&bdir).unwrap().count(), 1);
+        // «вчерашняя» копия (имя с другой датой) не блокирует сегодняшнюю:
+        // удаляем сегодняшнюю, оставляем старую — копия создаётся снова
+        let today_prefix = format!("apteka_{}-", chrono::Local::now().format("%Y%m%d"));
+        for e in fs::read_dir(&bdir).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with(&today_prefix) {
+                fs::remove_file(e.path()).unwrap();
+            }
+        }
+        assert!(
+            backup_daily_from_to(&src, &bdir, 5).unwrap().is_some(),
+            "копия за сегодня отсутствует — создаём (несмотря на старую)"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn backup_daily_rebacks_when_data_newer_than_backup() {
+        // ручная правка файла после утренней копии: файл данных новее копии —
+        // нужна свежая копия, иначе правка будет перезаписана без бэкапа.
+        // fs::copy на Windows переносит mtime источника, поэтому сохранение
+        // файла заново делает его строго новее копии
+        let dir = temp_dir("backup-daily-mtime");
+        let src = dir.join("apteka_data.json");
+        save_to(&sample_db(), &src).unwrap();
+        let bdir = dir.join("backups");
+        assert!(backup_daily_from_to(&src, &bdir, 5).unwrap().is_some());
+        assert!(backup_daily_from_to(&src, &bdir, 5).unwrap().is_none());
+        std::thread::sleep(std::time::Duration::from_millis(50)); // разрешение mtime
+        save_to(&sample_db(), &src).unwrap(); // «ручная правка»
+        assert!(
+            backup_daily_from_to(&src, &bdir, 5).unwrap().is_some(),
+            "файл новее свежайшей копии — создаём защитную копию"
+        );
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -566,7 +668,7 @@ mod tests {
             .expect("страховочный бэкап создан");
         // база меняется после бэкапа
         let mut changed = sample_db();
-        changed.medicines[0].name = "Изменено".to_string();
+        changed.medicine_mut(1).unwrap().name = "Изменено".to_string();
         save_to(&changed, &path).unwrap();
         assert_eq!(load_from(&path).medicines[0].name, "Изменено");
         // восстановление: бэкап читается и перезаписывает файл данных

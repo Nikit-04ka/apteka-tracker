@@ -1,0 +1,36 @@
+name: Release
+
+# Пуш тега vX.Y.Z собирает релизный exe и прикрепляет его к GitHub Release.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Tests
+        run: cargo test --workspace
+
+      - name: Build release
+        run: cargo build --release
+
+      - name: Rename exe with version
+        shell: pwsh
+        run: |
+          $v = (git describe --tags).TrimStart('v')
+          Copy-Item target/release/apteka-tracker.exe "apteka-tracker-$v-windows-x64.exe"
+
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: apteka-tracker-*-windows-x64.exe

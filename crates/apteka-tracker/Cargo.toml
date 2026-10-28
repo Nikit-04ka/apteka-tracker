@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 rust-version.workspace = true
+license.workspace = true
 description = "Домашняя аптечка: учёт сроков годности лекарств (GUI на Slint)"
 
 [dependencies]
@@ -11,6 +12,9 @@ apteka-core = { path = "../apteka-core" }
 slint = "1.18"
 arboard = "3"
 rfd = "0.17"
+# Миниатюры фото упаковок: оригинал с телефона — мегапиксели, в карточке
+# показывается 52×58. Только jpeg+png, без остальных форматов.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging"] }

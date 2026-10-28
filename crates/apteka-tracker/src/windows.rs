@@ -5,6 +5,7 @@ use apteka_core::model::*;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use crate::misc::*;
 use crate::state::*;
@@ -129,22 +130,23 @@ pub(crate) fn build_windows(
         let jh = journal.as_weak();
         with_state!(ui, state, on_open_journal, |_ui, st| {
             let j = jh.unwrap();
-            let rows: Vec<SharedString> = st
-                .domain
-                .db
-                .events
-                .iter()
-                .rev()
-                .map(|e| {
-                    SharedString::from(format!(
-                        "{} · {} — {} {}",
-                        e.at.format("%d.%m.%Y %H:%M"),
-                        e.medicine,
-                        e.kind,
-                        e.package
-                    ))
-                })
-                .collect();
+            let mut rows: Vec<SharedString> = Vec::new();
+            if st.domain.db.events.len() >= EVENTS_CAP {
+                // журнал хранит ограниченное число событий — говорим об усечении,
+                // а не показываем «все» события молча
+                rows.push(SharedString::from(format!(
+                    "Показаны последние {EVENTS_CAP} событий — более старые вытеснены."
+                )));
+            }
+            rows.extend(st.domain.db.events.iter().rev().map(|e| {
+                SharedString::from(format!(
+                    "{} · {} — {} {}",
+                    e.at.format("%d.%m.%Y %H:%M"),
+                    e.medicine,
+                    e.kind,
+                    e.package
+                ))
+            }));
             j.set_events(ModelRc::from(Rc::new(VecModel::from(rows))));
             let _ = j.show();
         });
@@ -230,6 +232,11 @@ pub(crate) fn build_windows(
             let ui = h.unwrap();
             let j = jh.unwrap();
             let Some(path) = files.borrow().get(idx as usize).cloned() else {
+                // список набирался при открытии окна: файлы могли исчезнуть —
+                // молча ничего не делаем нельзя, пользователь ждёт результат
+                j.set_note(SharedString::from(
+                    "Список копий устарел — закройте и заново откройте окно «Бэкапы»",
+                ));
                 return;
             };
             // страховка: текущее состояние — в бэкап, и его же можно вернуть Ctrl+Z.
@@ -328,7 +335,12 @@ pub(crate) fn build_windows(
         import_win.on_do_import(move |idx| {
             let ui = h.unwrap();
             let j = jh.unwrap();
-            let Some(path) = files.borrow().get(idx as usize).cloned() else { return };
+            let Some(path) = files.borrow().get(idx as usize).cloned() else {
+                j.set_note(SharedString::from(
+                    "Список файлов устарел — закройте и заново откройте окно импорта",
+                ));
+                return;
+            };
             let (meds, skipped) = match csv::import_csv(&path) {
                 Ok(r) => r,
                 Err(e) => {
@@ -370,7 +382,7 @@ pub(crate) fn build_windows(
                 );
             }
             let imported_count = meds.len();
-            st.domain.db.medicines.append(&mut meds);
+            st.domain.db.medicines.extend(meds.into_iter().map(Arc::new));
             st.selected_id = -1;
             ui.set_selected_id(-1);
             clear_photo_cache(&st);

@@ -4,7 +4,39 @@ use apteka_core::chrono::NaiveDate;
 use apteka_core::input::visible_medicines;
 use apteka_core::model::{medicine_info, Database, Medicine, Package};
 use apteka_core::storage::{load_from, save_to};
+use std::sync::Arc;
 use std::time::Instant;
+
+// Счётчик аллокаций: измеряет реальную занятую память (пик — после утечек нет,
+// dealloc вычитается) — для оценки стоимости 50 снимков истории.
+struct CountingAlloc;
+
+static ALLOCATED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+unsafe impl std::alloc::GlobalAlloc for CountingAlloc {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        ALLOCATED.fetch_add(layout.size(), std::sync::atomic::Ordering::Relaxed);
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        ALLOCATED.fetch_sub(layout.size(), std::sync::atomic::Ordering::Relaxed);
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, new_size: usize) -> *mut u8 {
+        let a = &ALLOCATED;
+        use std::sync::atomic::Ordering::Relaxed;
+        a.fetch_add(new_size, Relaxed);
+        a.fetch_sub(layout.size(), Relaxed);
+        unsafe { std::alloc::System.realloc(ptr, layout, new_size) }
+    }
+}
+
+#[global_allocator]
+static GLOBAL: CountingAlloc = CountingAlloc;
+
+fn allocated_mib() -> f64 {
+    ALLOCATED.load(std::sync::atomic::Ordering::Relaxed) as f64 / (1024.0 * 1024.0)
+}
 
 fn build_db(n_meds: usize, pkgs_per_med: usize) -> Database {
     let mut db = Database::default();
@@ -25,20 +57,20 @@ fn build_db(n_meds: usize, pkgs_per_med: usize) -> Database {
                 photo: String::new(),
             })
             .collect();
-        db.medicines.push(Medicine {
+        db.medicines.push(Arc::new(Medicine {
             id: (i + 1) as i32,
             name: format!("Препарат Противовоспалительный №{i}"),
             form: "Таблетки покрытые оболочкой".to_string(),
             note: "принимать по инструкции, хранить в прохладном месте".to_string(),
             tags: vec!["жаропонижающее".to_string()],
             packages,
-        });
+        }));
     }
     db
 }
 
 fn bench(name: &str, n_meds: usize) {
-    let db = build_db(n_meds, 3);
+    let mut db = build_db(n_meds, 3);
     let dir = std::env::temp_dir().join(format!("apteka-perf-{n_meds}"));
     std::fs::create_dir_all(&dir).unwrap();
     let path = dir.join("data.json");
@@ -85,6 +117,24 @@ fn bench(name: &str, n_meds: usize) {
         "  db.clone() (снимок истории × 10):        {:>8.2?}",
         t.elapsed()
     );
+
+    // память истории: 50 снимков, как держит History (стек отмены);
+    // между снимками — правки разных лекарств (COW «открепляет» по одному)
+    let before = allocated_mib();
+    let mut history: Vec<Database> = Vec::new();
+    for i in 0..50 {
+        history.push(db.clone());
+        if let Some(m) = db.medicine_mut(i % n_meds as i32 + 1) {
+            m.note = format!("правка {i}");
+        }
+    }
+    let held = allocated_mib() - before;
+    println!(
+        "  память 50 снимков истории:               {:>8.1} МиБ ({:.2} МиБ/снимок)",
+        held,
+        held / 50.0
+    );
+    drop(history);
 
     // сохранение на диск (fsync внутри), среднее по 5
     save_to(&db, &path).unwrap();

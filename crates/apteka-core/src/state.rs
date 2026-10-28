@@ -67,6 +67,21 @@ impl DomainState {
         self.last_commit_key = Some(key);
     }
 
+    /// Правка одного поля через мутацию `f` со «склейкой» шагов истории.
+    /// Снимок «до правки» снимает ядро — и только когда правка начинает новый
+    /// шаг: продолжение склейки не клонирует базу впустую (на каждую букву
+    /// набора). Мутация выполняется `f`, поэтому снимок гарантированно снят
+    /// ДО неё.
+    pub fn edit_coalesced(&mut self, kind: EditKind, scope: i32, f: impl FnOnce(&mut Database)) {
+        let key = (kind, scope);
+        let snapshot = (self.last_commit_key != Some(key)).then(|| self.db.clone());
+        f(&mut self.db);
+        match snapshot {
+            Some(s) => self.commit_coalesced(s, kind, scope),
+            None => self.last_commit_key = Some(key),
+        }
+    }
+
     /// Шаг по истории: назад при `backwards`, иначе вперёд. Подменяет `db`
     /// и сбрасывает склейку. `false` — в эту сторону истории нет.
     pub fn step_history(&mut self, backwards: bool) -> bool {
@@ -112,13 +127,14 @@ pub fn initial_selection(db: &Database, today: NaiveDate) -> i32 {
 mod tests {
     use super::*;
     use crate::model::{Medicine, Package};
+    use std::sync::Arc;
 
     /// Стартовый порог `warn_days` в `Database::default()`.
     const DEFAULT_WARN: i32 = 60;
 
-    fn med(id: i32, nearest_days: i64) -> Medicine {
+    fn med(id: i32, nearest_days: i64) -> Arc<Medicine> {
         let expiry = chrono::Utc::now().date_naive() + chrono::Duration::days(nearest_days);
-        Medicine {
+        Arc::new(Medicine {
             id,
             name: format!("лек-{id}"),
             form: "таблетки".to_string(),
@@ -137,7 +153,7 @@ mod tests {
                 disposed: None,
                 photo: String::new(),
             }],
-        }
+        })
     }
 
     #[test]
@@ -151,6 +167,45 @@ mod tests {
         s.commit_coalesced(b, EditKind::Name, 1); // склейка: второй шаг не создан
         assert!(s.step_history(true));
         assert_eq!(s.db.warn_days, DEFAULT_WARN); // один шаг — к исходному
+        assert!(!s.step_history(true));
+    }
+
+    #[test]
+    fn edit_coalesced_snapshots_pre_mutation_state_once_per_run() {
+        // снимок снимается ядром ДО мутации и только один раз на склейку:
+        // undo возвращает состояние до ПЕРВОЙ правки прогона
+        let mut s = DomainState::new(Database::default(), 10);
+        s.edit_coalesced(EditKind::Name, 1, |db| db.warn_days = 30);
+        s.edit_coalesced(EditKind::Name, 1, |db| db.warn_days = 45);
+        s.edit_coalesced(EditKind::Name, 1, |db| db.warn_days = 55);
+        assert!(s.step_history(true));
+        assert_eq!(s.db.warn_days, DEFAULT_WARN, "один шаг — к исходному");
+        assert!(!s.step_history(true));
+        // повтор возвращает всё склеенное
+        assert!(s.step_history(false));
+        assert_eq!(s.db.warn_days, 55);
+    }
+
+    #[test]
+    fn edit_coalesced_respects_kind_scope_and_structural_commits() {
+        let mut s = DomainState::new(Database::default(), 10);
+        s.edit_coalesced(EditKind::Note, 1, |db| db.warn_days = 30);
+        // другое поле — новый шаг
+        s.edit_coalesced(EditKind::Note, 2, |db| db.warn_days = 45);
+        // структурный коммит прерывает склейку
+        let b = s.db.clone();
+        s.db.warn_days = 50;
+        s.commit(b);
+        s.edit_coalesced(EditKind::Note, 2, |db| db.warn_days = 55);
+        // четыре отдельных шага: 55 → 50 → 45 → 30 → исходные 60
+        assert!(s.step_history(true));
+        assert_eq!(s.db.warn_days, 50);
+        assert!(s.step_history(true));
+        assert_eq!(s.db.warn_days, 45);
+        assert!(s.step_history(true));
+        assert_eq!(s.db.warn_days, 30);
+        assert!(s.step_history(true));
+        assert_eq!(s.db.warn_days, DEFAULT_WARN);
         assert!(!s.step_history(true));
     }
 
