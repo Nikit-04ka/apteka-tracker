@@ -18,8 +18,10 @@ jobs:
       # actions/checkout@v4 (пин на коммит — воспроизводимость CI)
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      # dtolnay/rust-toolchain@stable; версия пинется rust-toolchain.toml
+      # тулчейн пинется явно (и rust-toolchain.toml локально)
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: "1.95.0"
 
       # Swatinem/rust-cache@v2
       - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
