@@ -1,5 +1,7 @@
 # Домашняя аптечка (apteka-tracker)
 
+[![CI](https://github.com/Nikit-04ka/apteka-tracker/actions/workflows/ci.yml/badge.svg)](https://github.com/Nikit-04ka/apteka-tracker/actions/workflows/ci.yml)
+
 Небольшая Windows-программа на Rust для учёта лекарств домашней аптечки и их
 сроков годности. Одиночный портативный `.exe`, данные хранятся рядом с программой.
 
