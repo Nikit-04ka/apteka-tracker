@@ -1,7 +1,6 @@
 // Сборка строк и моделей UI из домена + обновления списков и статусов.
 
 use apteka_core::input::{all_tags, cal_grid, move_selection_index, visible_medicines};
-use apteka_core::model::*;
 use slint::{Model, ModelRc, SharedString, VecModel};
 
 use crate::misc::*;

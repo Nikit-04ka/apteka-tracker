@@ -1,7 +1,6 @@
 // Вторичные окна: журнал, отчёты, покупки, бэкапы, импорт (F6).
 
 use apteka_core::csv;
-use apteka_core::model::*;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;

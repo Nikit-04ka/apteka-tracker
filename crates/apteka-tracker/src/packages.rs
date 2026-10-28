@@ -3,7 +3,6 @@
 use apteka_core::chrono::Months;
 use apteka_core::csv;
 use apteka_core::input::{parse_package_input, PackageForm};
-use apteka_core::model::*;
 use slint::{ComponentHandle, SharedString};
 use std::cell::RefCell;
 use std::rc::Rc;

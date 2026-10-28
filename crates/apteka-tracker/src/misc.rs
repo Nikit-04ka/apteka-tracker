@@ -1,7 +1,6 @@
 // Служебное: цвета, флаги вида, persist, история отмены, настройки окна.
 
 use apteka_core::chrono::{Datelike, Local, NaiveDate};
-use apteka_core::model::*;
 use apteka_core::settings::AppSettings;
 use apteka_core::state::EditKind;
 use slint::private_unstable_api::re_exports::ColorScheme;

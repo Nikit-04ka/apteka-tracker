@@ -1,7 +1,6 @@
 // Карточка лекарства: правки полей, фото упаковок, колбёки (F6).
 
 use apteka_core::chrono::Local;
-use apteka_core::model::*;
 use apteka_core::state::{EditKind, GLOBAL_SCOPE};
 use image::ImageDecoder;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
