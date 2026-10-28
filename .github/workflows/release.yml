@@ -1,6 +1,8 @@
 name: Release
 
 # Пуш тега vX.Y.Z собирает релизный exe и прикрепляет его к GitHub Release.
+# Тулчейн пинется rust-toolchain.toml, зависимости — Cargo.lock (--locked),
+# к артефакту прикладывается SHA256 для проверки.
 on:
   push:
     tags: ["v*"]
@@ -13,25 +15,33 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      # actions/checkout@v4 (пин на коммит — воспроизводимость CI)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - uses: dtolnay/rust-toolchain@stable
+      # dtolnay/rust-toolchain@stable; версия пинется rust-toolchain.toml
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
 
-      - uses: Swatinem/rust-cache@v2
+      # Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
 
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
 
       - name: Build release
-        run: cargo build --release
+        run: cargo build --release --locked
 
-      - name: Rename exe with version
+      - name: Rename exe and compute SHA256
         shell: pwsh
         run: |
           $v = (git describe --tags).TrimStart('v')
-          Copy-Item target/release/apteka-tracker.exe "apteka-tracker-$v-windows-x64.exe"
+          $exe = "apteka-tracker-$v-windows-x64.exe"
+          Copy-Item target/release/apteka-tracker.exe $exe
+          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          "$sha  $exe" | Out-File "checksums-sha256.txt" -Encoding ascii
 
       - name: Attach to GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
-          files: apteka-tracker-*-windows-x64.exe
+          files: |
+            apteka-tracker-*-windows-x64.exe
+            checksums-sha256.txt

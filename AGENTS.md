@@ -6,7 +6,9 @@ Windows-приложение на Rust (GUI на Slint) для учёта лек
 с разными сроками. Записи с истекающим/истекшим сроком подсвечиваются.
 
 ## Tech Stack
-- Язык: Rust (x86_64-pc-windows-msvc); тулчейн разработки 1.95, MSRV в Cargo.toml — 1.92
+- Язык: Rust (x86_64-pc-windows-msvc); тулчейн пинется `rust-toolchain.toml`
+  (1.95.0 — одинаково локально и в CI), MSRV в Cargo.toml — 1.92; сборка в CI
+  с `--locked` (зависимости зафиксированы Cargo.lock), у релиза — SHA256.
 - GUI: Slint 1.18 (стиль fluent, сборка через slint-build)
 - Данные: serde + serde_json, даты: chrono
 - Диалоги: rfd; буфер обмена: arboard; Win32 API: windows-sys (MessageBoxW)
