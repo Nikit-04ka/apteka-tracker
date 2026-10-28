@@ -1,0 +1,27 @@
+name: Audit
+
+# Проверка зависимостей по базе RustSec (известные уязвимости в крейсах).
+# Отдельно от CI: запускается на пуш и еженедельно по расписанию — новые
+# advisories появляются даже без изменений в коде. Читает Cargo.lock,
+# компиляция не нужна.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1" # понедельник 06:00 UTC
+
+jobs:
+  audit:
+    runs-on: windows-latest
+    steps:
+      # actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # taiki-e/install-action@v2 — prebuilt cargo-audit без компиляции
+      - uses: taiki-e/install-action@86f7a0ffb25f40114606501a311ebcfaf882ea32
+        with:
+          tool: cargo-audit
+
+      - name: Dependency audit (RustSec)
+        run: cargo audit
