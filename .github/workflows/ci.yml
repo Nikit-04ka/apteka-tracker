@@ -30,3 +30,21 @@ jobs:
 
       - name: Tests
         run: cargo test --workspace --locked
+
+  # MSRV (rust-version в Cargo.toml) — проверяем, что заявление о 1.92 верно.
+  # rust-toolchain.toml пинит 1.95.0, поэтому cargo вызывается явно с +1.92.0.
+  msrv:
+    runs-on: windows-latest
+    steps:
+      # actions/checkout@v4 (пин на коммит — воспроизводимость CI)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec
+        with:
+          toolchain: "1.92.0"
+
+      # Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@e9d7b9f1e587218970671bac74e5511ed9506e6a
+
+      - name: Check with MSRV toolchain
+        run: cargo +1.92.0 check --workspace --all-targets --locked
