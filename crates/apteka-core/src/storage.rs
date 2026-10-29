@@ -132,19 +132,27 @@ pub fn list_backups_in(dir: &Path) -> Vec<PathBuf> {
 }
 
 /// Удаляет потерянные фото: файлы вида `pkg_*.{png,jpg,jpeg}`, на которые
-/// нет ссылок в базе. Возвращает количество удалённых файлов.
+/// нет ссылок в базе. Фото, упомянутые в резервных копиях, не трогаются:
+/// восстановление старого бэкапа не должно терять картинки.
+/// Возвращает количество удалённых файлов.
 pub fn cleanup_orphan_photos(db: &Database) -> usize {
-    cleanup_orphan_photos_in(&photos_dir(), db)
+    cleanup_orphan_photos_in(&photos_dir(), &backup_dir(), db)
 }
 
-/// То же с явным каталогом — для тестов.
-pub fn cleanup_orphan_photos_in(dir: &Path, db: &Database) -> usize {
+/// То же с явными каталогами — для тестов.
+pub fn cleanup_orphan_photos_in(dir: &Path, backups: &Path, db: &Database) -> usize {
     let used: std::collections::HashSet<String> = db
         .medicines
         .iter()
         .flat_map(|m| m.packages.iter())
         .filter(|p| !p.photo.is_empty())
         .map(|p| p.photo.clone())
+        .collect();
+    // Тексты резервных копий (их немного, ≤ keep) — для проверки ссылок на
+    // фото: имя файла уникально, contains достаточно.
+    let backup_texts: Vec<String> = list_backups_in(backups)
+        .iter()
+        .filter_map(|p| fs::read_to_string(p).ok())
         .collect();
     let entries = match fs::read_dir(dir) {
         Ok(rd) => rd,
@@ -164,7 +172,8 @@ pub fn cleanup_orphan_photos_in(dir: &Path, db: &Database) -> usize {
             .unwrap_or_default();
         let is_app_photo =
             name.starts_with("pkg_") && matches!(ext.as_str(), "png" | "jpg" | "jpeg");
-        if is_app_photo && !used.contains(&name) && fs::remove_file(&path).is_ok() {
+        let in_backup = backup_texts.iter().any(|t| t.contains(&name));
+        if is_app_photo && !used.contains(&name) && !in_backup && fs::remove_file(&path).is_ok() {
             removed += 1;
         }
     }
@@ -195,6 +204,12 @@ pub enum LoadOutcome {
 
 /// Загрузка с полной диагностикой (для старта приложения и тестов).
 pub fn load_outcome_from(path: &Path) -> LoadOutcome {
+    load_outcome_stamped(path, Local::now().format("%Y%m%d-%H%M%S-%3f").to_string())
+}
+
+/// То же с явным штампом имени карантина: выделено, чтобы ветка
+/// «карантин не удался» была покрыта тестом.
+fn load_outcome_stamped(path: &Path, stamp: String) -> LoadOutcome {
     if !path.exists() {
         return LoadOutcome::Missing;
     }
@@ -208,7 +223,6 @@ pub fn load_outcome_from(path: &Path) -> LoadOutcome {
             LoadOutcome::Loaded(db)
         }
         Err(e) => {
-            let stamp = Local::now().format("%Y%m%d-%H%M%S-%3f");
             let backup = PathBuf::from(format!("{}.corrupt-{stamp}", path.to_string_lossy()));
             let msg = format!("{e}");
             // Сохраняем повреждённые байты под любым именем: сначала
@@ -407,7 +421,7 @@ mod tests {
         fs::write(photos.join("notes.txt"), "d").unwrap();
         let mut db = sample_db();
         db.medicine_mut(1).unwrap().packages[0].photo = "pkg_1.png".to_string();
-        let removed = cleanup_orphan_photos_in(&photos, &db);
+        let removed = cleanup_orphan_photos_in(&photos, &dir.join("backups"), &db);
         assert_eq!(removed, 2, "удалены только сироты pkg_*");
         assert!(
             photos.join("pkg_1.png").exists(),
@@ -688,6 +702,84 @@ mod tests {
             before,
             "неудачное чтение бэкапа не меняет файл данных"
         );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn save_to_overwrites_existing_file_and_keeps_target_on_rename_failure() {
+        let dir = temp_dir("atomic");
+        // перезапись существующего файла работает (rename на Windows заменяет цель)
+        let path = dir.join("data.json");
+        fs::write(&path, "старое содержимое").unwrap();
+        save_to(&sample_db(), &path).unwrap();
+        assert_eq!(load_from(&path).medicines.len(), 1, "файл заменён целиком");
+        // rename падает (цель — непустой каталог): ошибка, прежние данные целы
+        let blocked = dir.join("blocked.json");
+        fs::create_dir(&blocked).unwrap();
+        fs::write(blocked.join("keep.txt"), "внутри").unwrap();
+        assert!(
+            save_to(&sample_db(), &blocked).is_err(),
+            "неудача сохранения возвращается ошибкой"
+        );
+        assert!(blocked.join("keep.txt").exists(), "каталог-цель не тронут");
+        assert_eq!(
+            load_from(&path).medicines.len(),
+            1,
+            "прежний файл данных не потерян"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn corrupt_quarantine_failure_reports_io_without_touching_original() {
+        // Если сохранить битые байты не удалось (rename и copy), возвращается
+        // Io: файл не тронут и не перезаписывается пустой базой.
+        let dir = temp_dir("quarantine");
+        let path = dir.join("bad.json");
+        let original = "{битый json";
+        fs::write(&path, original).unwrap();
+        // каталог с именем карантина делает rename и copy невозможными
+        fs::create_dir(path.with_file_name("bad.json.corrupt-TEST")).unwrap();
+        match load_outcome_stamped(&path, "TEST".to_string()) {
+            LoadOutcome::Io(msg) => assert!(msg.contains("НЕ тронуты"), "диагностика: {msg}"),
+            _ => panic!("ожидался Io при невозможности карантина"),
+        }
+        assert!(path.exists(), "исходный файл не удалён");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            original,
+            "байты повреждённого файла не тронуты"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn cleanup_orphan_photos_spares_photos_referenced_by_backups() {
+        // фото, на которое ссылается резервная копия, не удаляется: иначе
+        // восстановление старого бэкапа оставило бы запись без картинки
+        let dir = temp_dir("photos-bak");
+        let photos = dir.join("photos");
+        fs::create_dir_all(&photos).unwrap();
+        fs::write(photos.join("pkg_1.png"), "a").unwrap(); // в базе
+        fs::write(photos.join("pkg_2.jpg"), "b").unwrap(); // только в бэкапе
+        fs::write(photos.join("pkg_3.jpg"), "c").unwrap(); // сирота
+        let backups = dir.join("backups");
+        fs::create_dir_all(&backups).unwrap();
+        fs::write(
+            backups.join("apteka_20260101-000000-000.json"),
+            r#"{"photo": "pkg_2.jpg"}"#,
+        )
+        .unwrap();
+        let mut db = sample_db();
+        db.medicine_mut(1).unwrap().packages[0].photo = "pkg_1.png".to_string();
+        let removed = cleanup_orphan_photos_in(&photos, &backups, &db);
+        assert_eq!(removed, 1, "удалена только настоящая сирота");
+        assert!(photos.join("pkg_1.png").exists(), "фото из базы цело");
+        assert!(
+            photos.join("pkg_2.jpg").exists(),
+            "фото из бэкапа цело — восстановление его найдёт"
+        );
+        assert!(!photos.join("pkg_3.jpg").exists());
         fs::remove_dir_all(&dir).ok();
     }
 }

@@ -26,16 +26,18 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
     let today = Local::now().date_naive();
     let mut out = String::new();
     out.push('\u{FEFF}');
-    out.push_str("Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество;Цена;Открыта;Списано;Комментарий;Категории;Куплена;Период после вскрытия\r\n");
+    out.push_str("Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество;Цена;Открыта;Списано;Комментарий;Категории;Куплена;Период после вскрытия;ID\r\n");
     for m in &db.medicines {
         let tags_cell = esc(&m.tags.join(", "));
         if m.packages.is_empty() {
+            // колонки 3..10 и 12..13 пусты (нет упаковки), 11 — категории, 14 — ID
             out.push_str(&format!(
-                "{};{};{};;;;;;;;;{};;\r\n",
+                "{};{};{};;;;;;;;;{};;;{}\r\n",
                 esc(&m.name),
                 esc(&m.form),
                 esc(&m.note),
-                tags_cell
+                tags_cell,
+                m.id
             ));
             continue;
         }
@@ -72,7 +74,7 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
                 .map(|v| v.to_string())
                 .unwrap_or_default();
             out.push_str(&format!(
-                "{};{};{};{};{};{};{};{};{};{};{};{};{};{}\r\n",
+                "{};{};{};{};{};{};{};{};{};{};{};{};{};{};{}\r\n",
                 esc(&m.name),
                 esc(&m.form),
                 esc(&m.note),
@@ -86,7 +88,8 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
                 esc(&p.note),
                 tags_cell,
                 purchased_cell,
-                period_cell
+                period_cell,
+                m.id
             ));
         }
     }
@@ -101,20 +104,22 @@ fn esc(s: &str) -> String {
     // Защита от CSV formula injection: Excel исполняет ячейки, начинающиеся
     // с = + - @. Апостроф добавляется и перед собственным апострофом значения,
     // чтобы unesc снимал ровно одну защиту и round-trip был без потерь.
-    if v.starts_with(['\'', '=', '+', '-', '@']) {
+    // trim_start ловит и обход через ведущие пробелы/табуляцию (« =1+1»).
+    if v.trim_start().starts_with(['\'', '=', '+', '-', '@']) {
         v.insert(0, '\'');
     }
     format!("\"{}\"", v)
 }
 
 /// Обратная операция к `esc`: снимает ровно одну добавленную защиту (апостроф)
-/// перед значением, начинающимся с `'=+-@`. Иначе импорт возвращал бы имена
-/// с лишним ведущим апострофом (formula-injection защита «прилипала»).
+/// перед значением, начинающимся с `'=+-@` (с учётом ведущих пробелов). Иначе
+/// импорт возвращал бы имена с лишним ведущим апострофом (formula-injection
+/// защита «прилипала»).
 fn unesc(s: &str) -> String {
     // проверка и срез по байту безопасны: ведущий '\'' — однобайтовый ASCII
     if s.len() >= 2 && s.starts_with('\'') {
         let rest = &s[1..];
-        if rest.starts_with(['\'', '=', '+', '-', '@']) {
+        if rest.trim_start().starts_with(['\'', '=', '+', '-', '@']) {
             return rest.to_string();
         }
     }
@@ -122,6 +127,9 @@ fn unesc(s: &str) -> String {
 }
 
 /// Разбор CSV-текста (наш экспорт: разделитель «;», кавычки с удвоением).
+/// Кавычка открывает поле только в его начале: кавычка в середине
+/// незакавыченного поля — обычный символ, а не смена режима (иначе строка
+/// с «дикой» кавычкой молча поглощала разделители и переводы строк).
 pub fn parse_csv_text(text: &str) -> Vec<Vec<String>> {
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut row: Vec<String> = Vec::new();
@@ -142,7 +150,7 @@ pub fn parse_csv_text(text: &str) -> Vec<Vec<String>> {
             }
         } else {
             match c {
-                '"' => in_quotes = true,
+                '"' if field.is_empty() => in_quotes = true,
                 ';' => row.push(std::mem::take(&mut field)),
                 '\r' => {}
                 '\n' => {
@@ -183,19 +191,43 @@ fn parse_disposed_cell(s: &str) -> Option<DisposedInfo> {
     Some(DisposedInfo { date, reason })
 }
 
-/// Склеивает строки одного лекарства в его упаковки: пара (имя, форма) без
-/// регистра — как и дедупликация при импорте; строки не обязаны быть соседними.
+/// Ключ склейки строк в лекарство. Колонка ID (конец строки) несёт
+/// идентичность записи: два разных лекарства с одной парой (имя, форма)
+/// остаются разными и в roundtrip не схлопываются. Старые файлы без ID
+/// склеиваются по паре (имя, форма) без регистра.
+#[derive(PartialEq, Eq, Hash)]
+enum MergeKey {
+    Id(i32),
+    NameForm(String, String),
+}
+
+impl MergeKey {
+    fn of(source_id: i32, name: &str, form: &str) -> Self {
+        if source_id > 0 {
+            MergeKey::Id(source_id)
+        } else {
+            MergeKey::NameForm(name.trim().to_lowercase(), form.trim().to_lowercase())
+        }
+    }
+}
+
+/// Склеивает строки одного лекарства в его упаковки: строки не обязаны быть
+/// соседними. Индекс ключей держит склейку линейной (без сканов и аллокаций
+/// ключей на сравнение).
+#[allow(clippy::too_many_arguments)] // поля строки CSV — пучок, а не список опций
 fn merge_medicine(
     meds: &mut Vec<Medicine>,
+    index: &mut std::collections::HashMap<MergeKey, usize>,
+    source_id: i32,
     name: &str,
     form: String,
     note: String,
     tags: Vec<String>,
     package: Option<Package>,
 ) {
-    let key = |n: &str, f: &str| (n.trim().to_lowercase(), f.trim().to_lowercase());
-    let k = key(name, &form);
-    if let Some(m) = meds.iter_mut().find(|m| key(&m.name, &m.form) == k) {
+    let key = MergeKey::of(source_id, name, &form);
+    if let Some(&i) = index.get(&key) {
+        let m = &mut meds[i];
         if let Some(p) = package {
             m.packages.push(p);
         }
@@ -208,8 +240,9 @@ fn merge_medicine(
             }
         }
     } else {
+        index.insert(key, meds.len());
         meds.push(Medicine {
-            id: 0,
+            id: source_id,
             name: name.to_string(),
             form,
             note,
@@ -220,61 +253,102 @@ fn merge_medicine(
 }
 
 /// Дедупликация импортированных лекарств против существующей базы и внутри
-/// самого файла: лекарство с уже существующей парой (имя, форма) без регистра
-/// пропускается целиком — повторный импорт того же CSV не плодит дубли.
-/// Возвращает (оставленные лекарства, сколько отброшено как дубли).
+/// самого файла. Против базы — по паре (имя, форма) без регистра: лекарство
+/// с уже существующей парой пропускается целиком, повторный импорт того же
+/// CSV не плодит дубли. Внутри файла — по идентичности: лекарства с разными
+/// ID остаются разными даже при одном имени (см. `MergeKey`), безымянные
+/// записи старых форматов сверяются по паре (имя, форма).
+/// Возвращает (оставленные лекарства, отброшенные как дубли) — отброшенные
+/// вызывающий показывает пользователю, чтобы правки не пропадали молча.
 pub fn dedup_imported(
     existing: &[impl std::borrow::Borrow<Medicine>],
-    mut imported: Vec<Medicine>,
-) -> (Vec<Medicine>, usize) {
+    imported: Vec<Medicine>,
+) -> (Vec<Medicine>, Vec<Medicine>) {
     let key = |m: &Medicine| (m.name.trim().to_lowercase(), m.form.trim().to_lowercase());
-    let mut seen: std::collections::HashSet<(String, String)> =
+    let seen_base: std::collections::HashSet<(String, String)> =
         existing.iter().map(|m| key(m.borrow())).collect();
-    let mut duplicates = 0usize;
-    imported.retain(|m| {
-        let k = key(m);
-        if seen.contains(&k) {
-            duplicates += 1;
-            false
-        } else {
-            seen.insert(k);
-            true
+    let mut seen_file_ids: std::collections::HashSet<i32> = std::collections::HashSet::new();
+    let mut seen_file_names: std::collections::HashSet<(String, String)> =
+        std::collections::HashSet::new();
+    let mut kept = Vec::new();
+    let mut dropped = Vec::new();
+    for m in imported {
+        if seen_base.contains(&key(&m)) {
+            dropped.push(m);
+            continue;
         }
-    });
-    (imported, duplicates)
+        let dup_in_file = if m.id != 0 {
+            !seen_file_ids.insert(m.id)
+        } else {
+            !seen_file_names.insert(key(&m))
+        };
+        if dup_in_file {
+            dropped.push(m);
+        } else {
+            kept.push(m);
+        }
+    }
+    (kept, dropped)
+}
+
+/// Потолок размера импортируемого CSV: защита от «бомб» и опечаток
+/// (случайный выбран гигабайтный файл не должен съесть память).
+const MAX_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Читает текст CSV с потолком размера (для тестов — с настраиваемым).
+fn read_import_text(path: &Path, max_bytes: u64) -> io::Result<String> {
+    if let Ok(meta) = fs::metadata(path) {
+        if meta.len() > max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("файл больше {max_bytes} байт — импорт отменён"),
+            ));
+        }
+    }
+    fs::read_to_string(path)
 }
 
 /// Импорт CSV-файла экспорта: возвращает лекарства (id проставит вызывающий)
 /// и количество пропущенных строк. Жизненный цикл упаковки (вскрытие, период
 /// после вскрытия, списание) переживает экспорт/импорт.
 pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
-    let text = fs::read_to_string(path)?;
+    let text = read_import_text(path, MAX_IMPORT_BYTES)?;
     let text = text.strip_prefix('\u{FEFF}').unwrap_or(&text);
     let rows = parse_csv_text(text);
     let mut meds: Vec<Medicine> = Vec::new();
+    let mut index: std::collections::HashMap<MergeKey, usize> = std::collections::HashMap::new();
     let mut skipped = 0usize;
     for (i, row) in rows.iter().enumerate() {
-        if i == 0 {
-            continue; // заголовок
+        // Заголовок нашего экспорта; чужой/лишённый заголовка файл первую
+        // строку не теряет — она обрабатывается как данные.
+        if i == 0 && row.first().is_some_and(|h| h.trim() == "Лекарство") {
+            continue;
         }
         if row.len() < 7 {
             skipped += 1;
             continue;
         }
         let name_raw = unesc(&row[0]);
-        let name = name_raw.trim();
-        if name.is_empty() {
+        if name_raw.trim().is_empty() {
             skipped += 1;
             continue;
         }
-        let form = unesc(&row[1]).trim().to_string();
-        let note = unesc(&row[2]).trim().to_string();
+        let name = name_raw.as_str();
+        // Идентичность записи (последняя колонка наших файлов); старые и
+        // чужие файлы без неё склеиваются по (имя, форма).
+        let source_id = row
+            .get(14)
+            .and_then(|c| c.trim().parse::<i32>().ok())
+            .filter(|&id| id > 0)
+            .unwrap_or(0);
+        let form = unesc(&row[1]);
+        let note = unesc(&row[2]);
         let tags_src = if row.len() > 11 {
             unesc(&row[11])
         } else {
             String::new()
         };
-        let tags = parse_tags(tags_src.trim());
+        let tags = parse_tags(&tags_src);
         // экспортный формат: «01.2028 (до конца мес.)» — отрезаем пометку
         let date_raw = row[3].trim();
         let date_clean = date_raw.split(" (").next().unwrap_or(date_raw);
@@ -285,22 +359,29 @@ pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
                 .iter()
                 .all(|&c| row.get(c).map(|v| v.trim().is_empty()).unwrap_or(true));
             if empty_pkg_cells {
-                merge_medicine(&mut meds, name, form, note, tags, None);
+                merge_medicine(
+                    &mut meds, &mut index, source_id, name, form, note, tags, None,
+                );
             } else {
                 skipped += 1;
             }
             continue;
         };
-        let quantity = unesc(&row[6]).trim().to_string();
+        let quantity = unesc(&row[6]);
         let price = if row.len() > 7 && !row[7].trim().is_empty() {
-            row[7].trim().replace(',', ".").parse::<f64>().ok()
+            row[7]
+                .trim()
+                .replace(',', ".")
+                .parse::<f64>()
+                .ok()
+                .filter(|v| (0.0..=1_000_000.0).contains(v))
         } else {
             None
         };
         let opened = row.get(8).and_then(|c| parse_opened_cell(c));
         let disposed = row.get(9).and_then(|c| parse_disposed_cell(c));
         let pnote = if row.len() > 10 {
-            unesc(&row[10]).trim().to_string()
+            unesc(&row[10])
         } else {
             String::new()
         };
@@ -310,13 +391,14 @@ pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
         } else {
             None
         };
-        // «Период после вскрытия» (необязательная колонка старых файлов)
+        // «Период после вскрытия» (необязательная колонка старых файлов);
+        // диапазон как в migrate — 0..=3650, чтобы значение не терялось.
         let open_period_days = row.get(13).and_then(|c| {
             let t = c.trim();
             if t.is_empty() {
                 None
             } else {
-                t.parse::<i32>().ok().filter(|v| (1..=3650).contains(v))
+                t.parse::<i32>().ok().filter(|v| (0..=3650).contains(v))
             }
         });
         let package = Package {
@@ -332,7 +414,16 @@ pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
             disposed,
             photo: String::new(),
         };
-        merge_medicine(&mut meds, name, form, note, tags, Some(package));
+        merge_medicine(
+            &mut meds,
+            &mut index,
+            source_id,
+            name,
+            form,
+            note,
+            tags,
+            Some(package),
+        );
     }
     Ok((meds, skipped))
 }
@@ -704,14 +795,14 @@ mod tests {
             tags: Vec::new(),
             packages: vec![],
         };
-        let (kept, dup_count) = dedup_imported(&existing, vec![dup.clone(), fresh, dup]);
+        let (kept, dropped) = dedup_imported(&existing, vec![dup.clone(), fresh, dup]);
         assert_eq!(kept.len(), 1, "осталось только новое лекарство");
         assert_eq!(kept[0].name, "Новый");
-        assert_eq!(dup_count, 2, "дубль против базы + дубль внутри файла");
+        assert_eq!(dropped.len(), 2, "дубль против базы + дубль внутри файла");
         // повторный импорт того же — пусто
-        let (kept2, dup2) = dedup_imported(&existing, vec![]);
+        let (kept2, dropped2) = dedup_imported(&existing, vec![]);
         assert!(kept2.is_empty());
-        assert_eq!(dup2, 0);
+        assert!(dropped2.is_empty());
     }
 
     #[test]
@@ -725,14 +816,16 @@ mod tests {
         let (imported, skipped) = import_csv(&path).unwrap();
         assert_eq!(skipped, 0);
         assert_eq!(imported.len(), 1, "в файле одно лекарство");
-        let (kept, dups) = dedup_imported(&sample_db().medicines, imported);
+        let (kept, dropped) = dedup_imported(&sample_db().medicines, imported);
         assert!(kept.is_empty(), "повторный импорт не добавляет лекарств");
-        assert_eq!(dups, 1);
+        assert_eq!(dropped.len(), 1);
+        // отброшенные возвращаются вызывающему — он показывает их пользователю
+        assert_eq!(dropped[0].name, "Парацетамол \"Тева\"");
         // новые упаковки у уже известного лекарства тоже не проходят
         let mut more = sample_db();
         let extra = more.medicines[0].packages[0].clone();
         more.medicine_mut(1).unwrap().packages.push(extra);
-        let (kept2, dups2) = dedup_imported(
+        let (kept2, dropped2) = dedup_imported(
             &sample_db().medicines,
             more.medicines
                 .into_iter()
@@ -743,7 +836,193 @@ mod tests {
             kept2.is_empty(),
             "лекарство отбрасывается вместе со всеми упаковками"
         );
-        assert_eq!(dups2, 1);
+        assert_eq!(dropped2.len(), 1);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn csv_roundtrip_keeps_same_named_medicines_distinct() {
+        // Два разных лекарства с одной парой (имя, форма) не схлопываются
+        // при экспорте/импорте: колонка ID несёт идентичность записи.
+        let dir = temp_dir("twin");
+        let path = dir.join("export.csv");
+        let mut db = Database::default();
+        for (id, note) in [(1, "первый"), (2, "второй")] {
+            db.medicines.push(Arc::new(Medicine {
+                id,
+                name: "Аспирин".to_string(),
+                form: "Таблетки".to_string(),
+                note: note.to_string(),
+                tags: Vec::new(),
+                packages: vec![lifecycle_pkg(id, (2030, 1, 1), None, None, None)],
+            }));
+        }
+        export_csv_to(&db, &path).unwrap();
+        let (meds, skipped) = import_csv(&path).unwrap();
+        assert_eq!(skipped, 0);
+        assert_eq!(meds.len(), 2, "лекарства остаются разными");
+        assert_eq!(meds[0].id, 1, "идентичность строки сохранена для склейки");
+        assert_eq!(meds[1].id, 2);
+        assert_eq!(meds[0].note, "первый", "заметка второго не затирает первую");
+        assert_eq!(meds[1].note, "второй", "заметка второго не потеряна");
+        // и дедупликация в пустую базу их не схлопывает
+        let empty: Vec<Medicine> = Vec::new();
+        let (kept, dropped) = dedup_imported(&empty, meds);
+        assert_eq!(kept.len(), 2);
+        assert!(dropped.is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn import_rejects_prices_the_form_would_reject() {
+        // Валидация цены импорта согласована с формой (0.0..=1_000_000.0):
+        // inf/NaN/отрицательные не попадают в отчёты о тратах
+        let dir = temp_dir("prices");
+        let csv = dir.join("in.csv");
+        let mut text = String::from(
+            "\u{FEFF}Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество;Цена\r\n",
+        );
+        for (n, price) in [
+            ("p1", "inf"),
+            ("p2", "NaN"),
+            ("p3", "-5"),
+            ("p4", "1e400"),
+            ("p5", "350,50"),
+            ("p6", ""),
+        ] {
+            text.push_str(&format!("{n};Таблетки;;01.01.2030;;;1 уп;{price}\r\n"));
+        }
+        fs::write(&csv, text).unwrap();
+        let (meds, skipped) = import_csv(&csv).unwrap();
+        assert_eq!(skipped, 0);
+        assert_eq!(meds.len(), 6);
+        let price_of = |n: &str| meds.iter().find(|m| m.name == n).unwrap().packages[0].price;
+        assert_eq!(price_of("p1"), None, "inf отвергается");
+        assert_eq!(price_of("p2"), None, "NaN отвергается");
+        assert_eq!(price_of("p3"), None, "отрицательная цена отвергается");
+        assert_eq!(price_of("p4"), None, "переполнение в inf отвергается");
+        assert_eq!(
+            price_of("p5"),
+            Some(350.5),
+            "запятая — десятичный разделитель"
+        );
+        assert_eq!(price_of("p6"), None, "пустая цена — None");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn csv_roundtrip_preserves_whitespace_and_zero_period() {
+        // Краевые пробелы текста и период 0 переживают экспорт/импорт
+        let dir = temp_dir("ws");
+        let path = dir.join("export.csv");
+        let mut pkg = lifecycle_pkg(1, (2030, 1, 1), Some((2026, 10, 1)), Some(0), None);
+        pkg.quantity = " 1 уп ".to_string();
+        let mut db = Database::default();
+        db.medicines.push(Arc::new(Medicine {
+            id: 1,
+            name: "  Важное".to_string(),
+            form: "Таблетки".to_string(),
+            note: " x ".to_string(),
+            tags: Vec::new(),
+            packages: vec![pkg],
+        }));
+        export_csv_to(&db, &path).unwrap();
+        let (meds, skipped) = import_csv(&path).unwrap();
+        assert_eq!(skipped, 0);
+        assert_eq!(
+            meds[0].name, "  Важное",
+            "краевые пробелы имени не съедаются"
+        );
+        assert_eq!(meds[0].note, " x ", "краевые пробелы заметки не съедаются");
+        assert_eq!(meds[0].packages[0].quantity, " 1 уп ");
+        assert_eq!(
+            meds[0].packages[0].open_period_days,
+            Some(0),
+            "период 0 — валиден и не превращается в None"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn formula_injection_guard_covers_leading_whitespace() {
+        // guard ловит и ведущие пробелы/табуляцию; round-trip без потерь
+        let dir = temp_dir("inject-ws");
+        let path = dir.join("export.csv");
+        let mut db = Database::default();
+        for (i, name) in [" =1+1", "\t=1+1"].iter().enumerate() {
+            db.medicines.push(Arc::new(Medicine {
+                id: i as i32 + 1,
+                name: (*name).to_string(),
+                form: "Таблетки".to_string(),
+                note: String::new(),
+                tags: Vec::new(),
+                packages: Vec::new(),
+            }));
+        }
+        export_csv_to(&db, &path).unwrap();
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("\"' =1+1\""), "пробел не обходит защиту");
+        assert!(text.contains("\"'\t=1+1\""), "табуляция не обходит защиту");
+        let (meds, skipped) = import_csv(&path).unwrap();
+        assert_eq!(skipped, 0);
+        let got: Vec<String> = meds.iter().map(|m| m.name.clone()).collect();
+        assert_eq!(
+            got,
+            vec![" =1+1", "\t=1+1"],
+            "round-trip без прилипшего апострофа"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn headerless_csv_keeps_first_row() {
+        // Строка 0 обрабатывается как данные, если это не заголовок нашего экспорта
+        let dir = temp_dir("nohdr");
+        let csv = dir.join("in.csv");
+        fs::write(
+            &csv,
+            "\u{FEFF}Аспирин;Таблетки;;2027-01-01;;;1 уп\r\n\
+             Ибупрофен;Капсулы;;2027-02-01;;;1 уп\r\n",
+        )
+        .unwrap();
+        let (meds, skipped) = import_csv(&csv).unwrap();
+        assert_eq!(skipped, 0);
+        assert_eq!(
+            meds.len(),
+            2,
+            "первая строка — данные, а не потерянный «заголовок»"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn stray_quote_in_unquoted_field_is_literal() {
+        // Кавычка в середине незакавыченного поля — символ, а не смена режима
+        let dir = temp_dir("quote");
+        let csv = dir.join("in.csv");
+        fs::write(
+            &csv,
+            "\u{FEFF}Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество\r\n\
+             Хлоргексидин;Раствор;сказал \"раз\" и;2027-01-01;;;1 уп\r\n",
+        )
+        .unwrap();
+        let (meds, skipped) = import_csv(&csv).unwrap();
+        assert_eq!(skipped, 0);
+        assert_eq!(meds.len(), 1, "строка не глотается «дикой» кавычкой");
+        assert_eq!(meds[0].note, "сказал \"раз\" и");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn read_import_text_enforces_size_cap() {
+        let dir = temp_dir("cap");
+        let f = dir.join("big.csv");
+        fs::write(&f, "0123456789").unwrap();
+        assert!(
+            read_import_text(&f, 4).is_err(),
+            "файл больше потолка отклоняется"
+        );
+        assert_eq!(read_import_text(&f, 1024).unwrap(), "0123456789");
         fs::remove_dir_all(&dir).ok();
     }
 }

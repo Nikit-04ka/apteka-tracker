@@ -213,6 +213,12 @@ impl Database {
                         p.open_period_days = None;
                     }
                 }
+                // Инвариант month_only: в expiry хранится последний день месяца.
+                // Файл правили руками или данные из старой версии — нормализуем,
+                // иначе CSV-roundtrip молча сдвинул бы дату.
+                if p.month_only {
+                    p.expiry = end_of_month(p.expiry.year(), p.expiry.month());
+                }
                 // Имя файла фото — только имя: путь с разделителями или «..»
                 // позволил бы читать файлы вне каталога photos/.
                 if !p.photo.is_empty() {
@@ -227,7 +233,7 @@ impl Database {
         // запись получит занятый id и данные переплетутся.
         let max_med = self.medicines.iter().map(|m| m.id).max().unwrap_or(0);
         if self.next_med_id <= max_med {
-            self.next_med_id = max_med + 1;
+            self.next_med_id = max_med.saturating_add(1);
         }
         let max_pkg = self
             .medicines
@@ -237,7 +243,29 @@ impl Database {
             .max()
             .unwrap_or(0);
         if self.next_pkg_id <= max_pkg {
-            self.next_pkg_id = max_pkg + 1;
+            self.next_pkg_id = max_pkg.saturating_add(1);
+        }
+        // Дубликаты id (файл правили руками) — перенумеровываем: иначе
+        // medicine_mut(id) вернёт первую запись, и правки перепутаются.
+        let mut seen_med = std::collections::HashSet::new();
+        for m in &mut self.medicines {
+            let m = Arc::make_mut(m);
+            if m.id < 1 || !seen_med.insert(m.id) {
+                m.id = self.next_med_id;
+                self.next_med_id = self.next_med_id.saturating_add(1);
+                seen_med.insert(m.id);
+            }
+        }
+        let mut seen_pkg = std::collections::HashSet::new();
+        for m in &mut self.medicines {
+            let m = Arc::make_mut(m);
+            for p in &mut m.packages {
+                if p.id < 1 || !seen_pkg.insert(p.id) {
+                    p.id = self.next_pkg_id;
+                    self.next_pkg_id = self.next_pkg_id.saturating_add(1);
+                    seen_pkg.insert(p.id);
+                }
+            }
         }
     }
 }
@@ -1107,5 +1135,61 @@ mod tests {
         assert_eq!(ps[0].open_period_days, None, "мусорный период отброшен");
         assert_eq!(ps[0].photo, "evil.png", "путь фото сведён к имени файла");
         assert_eq!(ps[1].open_period_days, Some(30), "корректный период цел");
+    }
+
+    #[test]
+    fn migrate_normalizes_month_only_expiry_to_end_of_month() {
+        // Инвариант month_only: в expiry — последний день месяца. Рукописный
+        // файл с «15.01.2028, month_only» нормализуется при загрузке, а не
+        // сдвигается молча при CSV-roundtrip.
+        let mut db = Database::default();
+        db.medicines.push(Arc::new(Medicine {
+            id: 1,
+            name: "Тест".to_string(),
+            form: String::new(),
+            note: String::new(),
+            tags: Vec::new(),
+            packages: vec![pkg(1, d("2028-01-15"), true), pkg(2, d("2027-02-10"), true)],
+        }));
+        db.migrate();
+        let ps = &db.medicines[0].packages;
+        assert_eq!(ps[0].expiry, d("2028-01-31"), "январь — до конца месяца");
+        assert_eq!(ps[1].expiry, d("2027-02-28"), "февраль — до конца месяца");
+    }
+
+    #[test]
+    fn migrate_renumbers_duplicate_ids() {
+        // Дубликаты id (рукописный файл) получают уникальные: правка по id
+        // не перепутывает записи
+        let mut db = Database {
+            next_med_id: 1,
+            next_pkg_id: 1,
+            ..Default::default()
+        };
+        for name in ["Первое", "Второе"] {
+            db.medicines.push(Arc::new(Medicine {
+                id: 7,
+                name: name.to_string(),
+                form: String::new(),
+                note: String::new(),
+                tags: Vec::new(),
+                packages: vec![pkg(5, d("2030-01-01"), false)],
+            }));
+        }
+        db.migrate();
+        let ids: std::collections::HashSet<i32> = db.medicines.iter().map(|m| m.id).collect();
+        assert_eq!(ids.len(), 2, "id лекарств уникальны");
+        assert_eq!(
+            db.medicine(7).unwrap().name,
+            "Первое",
+            "первая запись держит свой id"
+        );
+        let pkg_ids: std::collections::HashSet<i32> = db
+            .medicines
+            .iter()
+            .flat_map(|m| m.packages.iter())
+            .map(|p| p.id)
+            .collect();
+        assert_eq!(pkg_ids.len(), 2, "id упаковок уникальны");
     }
 }
