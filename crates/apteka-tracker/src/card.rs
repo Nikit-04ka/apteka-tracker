@@ -305,16 +305,19 @@ pub(crate) fn register_card_cbs(
     });
 
     with_state!(ui, state, on_search_edited, |ui, mut st, text| {
+        disarm_delete(&ui);
         st.search = text.to_string();
         rebuild_list(&ui, &st);
     });
 
     with_state!(ui, state, on_filter_selected, |ui, mut st, idx| {
+        disarm_delete(&ui);
         st.filter_idx = idx as usize;
         rebuild_list(&ui, &st);
     });
 
     with_state!(ui, state, on_tag_filter_selected, |ui, mut st, idx| {
+        disarm_delete(&ui);
         let model = ui.get_tag_options();
         st.tag_filter = model
             .row_data(idx as usize)
@@ -324,6 +327,7 @@ pub(crate) fn register_card_cbs(
     });
 
     with_state!(ui, state, on_sort_selected, |ui, mut st, idx| {
+        disarm_delete(&ui);
         st.sort_idx = idx as usize;
         rebuild_list(&ui, &st);
     });

@@ -324,18 +324,21 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // Отложенное автосохранение правок текста (диск — не на каждую букву):
     // таймер перезапускается при каждой правке, диск трогается один раз
-    // через 800 мс после последнего изменения.
+    // через 800 мс после последнего изменения. Repeated, а не SingleShot:
+    // тик на занятом состоянии не теряется безвозвратно — следующий повторит
+    // сохранение; без несохранённых правок колбэк ничего не делает.
     let save_timer: Rc<slint::Timer> = Rc::new(slint::Timer::default());
     {
         let h = ui.as_weak();
         let s = state.clone();
         save_timer.start(
-            slint::TimerMode::SingleShot,
+            slint::TimerMode::Repeated,
             std::time::Duration::from_millis(800),
             move || {
                 // try_borrow: message box (паника, выход) прокачивает message
                 // loop, и тик может прилететь на занятом состоянии — пропускаем
-                // его: unsaved останется и будет дозаписан мутацией или выходом
+                // его: unsaved останется, его дозапишет следующий тик, мутация
+                // или чистый выход
                 if let (Some(ui), Ok(st)) = (h.upgrade(), s.try_borrow()) {
                     if st.domain.unsaved.get() {
                         persist(&ui, &st);

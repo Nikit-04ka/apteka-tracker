@@ -353,13 +353,29 @@ pub(crate) fn build_windows(
             }
             let mut st = s.borrow_mut();
             // Дедупликация (ядро csv::dedup_imported): пара (имя, форма) без
-            // регистра — против базы и внутри файла. Повторный импорт того же
-            // CSV не плодит дубли.
-            let (kept_meds, duplicates) = csv::dedup_imported(&st.domain.db.medicines, meds);
+            // регистра — против базы, идентичность — внутри файла. Повторный
+            // импорт того же CSV не плодит дубли.
+            let (kept_meds, dropped) = csv::dedup_imported(&st.domain.db.medicines, meds);
+            let duplicates = dropped.len();
+            let dropped_names = |limit: usize| {
+                let mut s = dropped
+                    .iter()
+                    .take(limit)
+                    .map(|m| m.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                if duplicates > limit {
+                    s.push_str(", …");
+                }
+                s
+            };
             let mut meds = kept_meds;
             if meds.is_empty() {
                 let note = if duplicates > 0 {
-                    format!("Все лекарства из файла уже есть в аптечке (дублей: {duplicates}).")
+                    format!(
+                        "Все лекарства из файла уже есть в аптечке (дублей: {duplicates}): {}.",
+                        dropped_names(5)
+                    )
                 } else {
                     "В файле нет корректных строк.".to_string()
                 };
@@ -391,7 +407,8 @@ pub(crate) fn build_windows(
                 "Импортировано лекарств: {imported_count} (упаковок: {total_pkgs}, пропущено строк: {skipped}",
             );
             if duplicates > 0 {
-                note.push_str(&format!(", дублей пропущено: {duplicates}"));
+                // имена отброшенных — чтобы правки в файле не пропадали молча
+                note.push_str(&format!(", дублей пропущено: {duplicates} ({})", dropped_names(5)));
             }
             note.push(')');
             j.set_note(SharedString::from(note));

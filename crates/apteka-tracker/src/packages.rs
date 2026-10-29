@@ -525,6 +525,7 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
     });
 
     with_state!(ui, state, on_toggle_show_disposed, |ui, st| {
+        disarm_delete(&ui);
         ui.set_show_disposed(!ui.get_show_disposed());
         rebuild_packages(&ui, &st);
     });

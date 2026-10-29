@@ -245,6 +245,7 @@ pub(crate) fn register_misc_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>) {
 
     // Календарь: открытие (месяц из текущего срока), листание, выбор дня
     with_state!(ui, state, on_cal_month_opened, |ui, mut st| {
+        disarm_delete(&ui);
         match parse_date_input(&ui.get_pkg_expiry()) {
             Some((d, _)) => {
                 st.cal_year = d.year();
@@ -259,6 +260,7 @@ pub(crate) fn register_misc_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>) {
         cal_rebuild(&ui, &st);
     });
     with_state!(ui, state, on_cal_prev_month, |ui, mut st| {
+        disarm_delete(&ui);
         st.cal_month -= 1;
         if st.cal_month == 0 {
             st.cal_month = 12;
@@ -267,6 +269,7 @@ pub(crate) fn register_misc_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>) {
         cal_rebuild(&ui, &st);
     });
     with_state!(ui, state, on_cal_next_month, |ui, mut st| {
+        disarm_delete(&ui);
         st.cal_month += 1;
         if st.cal_month > 12 {
             st.cal_month = 1;
@@ -350,6 +353,18 @@ fn run_photo_dialog(ui: &AppWindow, state: &Rc<RefCell<UiState>>, force_pid: Opt
 /// Прикрепляет выбранный файл к существующей упаковке: копия в photos/,
 /// снимок в историю, обновление карточки и сохранение.
 fn attach_photo(ui: &AppWindow, state: &Rc<RefCell<UiState>>, pid: i32, file: &std::path::Path) {
+    // Упаковку проверяем до копирования: при устаревшем pid файл-сирота
+    // попадал бы в photos/, а статус врал бы об успехе.
+    {
+        let st = state.borrow();
+        let found = st
+            .selected()
+            .is_some_and(|m| m.packages.iter().any(|p| p.id == pid));
+        if !found {
+            set_status_info(ui, "Упаковка не найдена — фото не прикреплено".to_string());
+            return;
+        }
+    }
     let fname = match copy_photo_to_store(file, pid) {
         Ok(f) => f,
         Err(e) => {
@@ -380,6 +395,8 @@ fn attach_photo(ui: &AppWindow, state: &Rc<RefCell<UiState>>, pid: i32, file: &s
     rebuild_packages(ui, &st);
     if changed {
         persist(ui, &st);
+        set_status_info(ui, "Фото упаковки обновлено".to_string());
+    } else {
+        set_status_info(ui, "Фото упаковки уже было прикреплено".to_string());
     }
-    set_status_info(ui, "Фото упаковки обновлено".to_string());
 }
