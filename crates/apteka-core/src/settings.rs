@@ -17,6 +17,8 @@ pub struct AppSettings {
     pub maximized: bool,
     /// тёмная тема (Palette.color-scheme)
     pub dark_theme: bool,
+    /// Язык интерфейса (код из `i18n::Lang`); пусто — определить по системной локали
+    pub language: String,
 }
 
 /// Путь к файлу настроек.
@@ -25,10 +27,16 @@ pub fn settings_path() -> PathBuf {
 }
 
 /// Загрузка настроек; отсутствующий/битый файл — значения по умолчанию.
+/// Разбор байтов настроек: JSON, опционально с BOM (Notepad, PowerShell).
+fn parse_settings(bytes: &[u8]) -> Option<AppSettings> {
+    let bytes = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF][..]).unwrap_or(bytes);
+    serde_json::from_slice(bytes).ok()
+}
+
 pub fn load_settings() -> AppSettings {
     std::fs::read(settings_path())
         .ok()
-        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .and_then(|bytes| parse_settings(&bytes))
         .unwrap_or_default()
 }
 
@@ -56,6 +64,7 @@ mod tests {
             win_h: Some(680.0),
             maximized: true,
             dark_theme: true,
+            language: "de".to_string(),
         };
         let text = serde_json::to_string(&s).unwrap();
         let back: AppSettings = serde_json::from_str(&text).unwrap();
@@ -64,10 +73,21 @@ mod tests {
         assert_eq!(back.win_w, Some(1150.0));
         assert!(back.maximized);
         assert!(back.dark_theme);
+        assert_eq!(back.language, "de");
         // пустой/частичный JSON — значения по умолчанию, без ошибок
         let partial: AppSettings = serde_json::from_str(r#"{"dark_theme": true}"#).unwrap();
         assert!(partial.dark_theme);
         assert_eq!(partial.win_x, None);
         assert!(!partial.maximized);
+    }
+
+    #[test]
+    fn settings_parse_tolerates_bom_and_garbage() {
+        // файл, сохранённый Notepad/PowerShell, начинается с BOM
+        let mut bytes = vec![0xEF, 0xBB, 0xBF];
+        bytes.extend_from_slice(br#"{"language": "de"}"#);
+        assert_eq!(parse_settings(&bytes).unwrap().language, "de");
+        // мусор вместо JSON — тихие умолчания, без паники
+        assert!(parse_settings("{ это не json".as_bytes()).is_none());
     }
 }

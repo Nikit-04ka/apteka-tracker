@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 mod card;
+mod l10n;
 mod misc;
 mod packages;
 mod state;
@@ -25,6 +26,8 @@ use crate::packages::*;
 use crate::state::*;
 use crate::ui_sync::*;
 use crate::windows::*;
+
+use apteka_core::i18n::{fmt, tr, Lang, Str};
 
 slint::include_modules!();
 
@@ -110,7 +113,7 @@ pub(crate) fn message_box(text: &str) {
         use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONWARNING, MB_OK};
         unsafe {
             let text: Vec<u16> = format!("{text}\0").encode_utf16().collect();
-            let title: Vec<u16> = "Домашняя аптечка\0".encode_utf16().collect();
+            let title: Vec<u16> = format!("{}\0", l10n::msg_title()).encode_utf16().collect();
             MessageBoxW(
                 std::ptr::null_mut(),
                 text.as_ptr(),
@@ -150,11 +153,11 @@ pub(crate) fn install_panic_hook() {
             .downcast_ref::<&str>()
             .map(|s| s.to_string())
             .or_else(|| info.payload().downcast_ref::<String>().cloned())
-            .unwrap_or_else(|| "неизвестная паника".to_string());
+            .unwrap_or_else(|| tr(Str::PanicUnknown).to_string());
         let place = info
             .location()
             .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
-            .unwrap_or_else(|| "место неизвестно".to_string());
+            .unwrap_or_else(|| tr(Str::PanicPlaceUnknown).to_string());
         let thread = std::thread::current()
             .name()
             .unwrap_or("<без имени>")
@@ -176,28 +179,28 @@ pub(crate) fn install_panic_hook() {
             use std::io::Write;
             let _ = writeln!(f, "{entry}поток: {thread}");
         }
-        message_box(
-            "Программа аварийно завершается.\nПодробности записаны в apteka_crash.log рядом с программой — пришлите его вместе с описанием действий, которые к этому привели.",
-        );
+        message_box(tr(Str::CrashMsg));
         default_hook(info);
     }));
 }
 
 #[cfg(windows)]
 pub(crate) fn notify_already_running() {
-    message_box(
-        "Домашняя аптечка уже запущена.\n\n\
-         Если окна не видно — посмотрите на панели задач: возможно, \
-         программа свёрнута или её окно на другом мониторе.",
-    );
+    message_box(tr(Str::AlreadyRunning));
 }
 
 #[cfg(not(windows))]
 pub(crate) fn notify_already_running() {
-    eprintln!("Домашняя аптечка уже запущена.");
+    eprintln!("{}", tr(Str::AlreadyRunning));
 }
 
 fn main() -> Result<(), slint::PlatformError> {
+    // Язык интерфейса определяется до первого message box: сохранённый выбор →
+    // системная локаль → русский. Дальше все строки берутся из i18n.
+    let settings: Rc<RefCell<AppSettings>> = Rc::new(RefCell::new(settings::load_settings()));
+    let lang = l10n::initial_lang(&settings.borrow());
+    apteka_core::i18n::set_lang(lang);
+
     // Паника: лог + сообщение вместо молчаливого вылета (в release консоли нет).
     install_panic_hook();
 
@@ -223,16 +226,14 @@ fn main() -> Result<(), slint::PlatformError> {
             backup,
             msg,
         } => {
-            startup_warning = Some(format!(
-                "Файл данных был повреждён и сохранён как {}. Работаем с пустой базой ({msg}).\n\nЕсли раньше делали «Бэкапы» — откройте их кнопкой «Бэкапы» и восстановите последнюю копию.",
-                backup.display()
+            startup_warning = Some(fmt(
+                Str::CorruptWarning,
+                &[&backup.display().to_string(), &msg],
             ));
             database
         }
         storage::LoadOutcome::Io(e) => {
-            message_box(&format!(
-                "Не удалось прочитать файл данных:\n{e}\n\nПрограмма закроется, чтобы не перезаписать ваши данные.\nЕсли файл занят другой программой (Excel, редактор) — закройте её и запустите аптечку снова."
-            ));
+            message_box(&fmt(Str::IoError, &[&e]));
             return Ok(());
         }
     };
@@ -245,9 +246,12 @@ fn main() -> Result<(), slint::PlatformError> {
     // ротация keep=5 вытеснила бы копии прошлых дней). backup_done = false
     // (сбой) → первая мутация повторит бэкап сегодня же.
     let (backup_note, backup_done) = match storage::backup_daily() {
-        Ok(Some(path)) => (format!(" · Бэкап: {}", path.display()), true),
+        Ok(Some(path)) => (
+            fmt(Str::StatusBackupOk, &[&path.display().to_string()]),
+            true,
+        ),
         Ok(None) => (String::new(), true),
-        Err(e) => (format!(" · Бэкап не удался: {e}"), false),
+        Err(e) => (fmt(Str::StatusBackupFail, &[&e.to_string()]), false),
     };
     // Потерянные фото (pkg_* без ссылок в базе) — мусор от прошлых удалений.
     // Чистим только при реально прочитанной базе — см. orphan_cleanup_allowed.
@@ -259,32 +263,32 @@ fn main() -> Result<(), slint::PlatformError> {
         // ошибка не проглатывается — иначе она вскроется только при первой
         // мутации (F5).
         if let Err(e) = storage::save(&db) {
-            message_box(&format!(
-                "Не удалось создать файл данных:\n{e}\n\nФайл: {}",
-                storage::data_file_path().display()
+            message_box(&fmt(
+                Str::CreateFileError,
+                &[
+                    &e.to_string(),
+                    &storage::data_file_path().display().to_string(),
+                ],
             ));
         }
     }
     let ui = AppWindow::new()?;
 
-    // Настройки окна и темы (settings.json рядом с exe).
-    let settings: Rc<RefCell<AppSettings>> = Rc::new(RefCell::new(settings::load_settings()));
+    // Настройки окна и темы (settings.json рядом с exe) — язык уже применён.
     apply_window_settings(&ui, &settings.borrow());
 
-    // Справочник форм для комбобокса
-    let forms: Vec<SharedString> = FORMS.iter().map(|s| SharedString::from(*s)).collect();
+    // Справочник форм для комбобокса: показываем переводом, в базе — канон
+    let forms: Vec<SharedString> = FORMS
+        .iter()
+        .map(|f| SharedString::from(apteka_core::i18n::form_display(f)))
+        .collect();
     ui.set_form_options(ModelRc::from(Rc::new(VecModel::from(forms))));
 
     ui.set_warn_days(db.warn_days);
+    let data_path = storage::data_file_path().display().to_string();
     let startup_msg = match &startup_warning {
-        Some(w) => format!(
-            "ВНИМАНИЕ: {w} · Данные: {}{backup_note}",
-            storage::data_file_path().display()
-        ),
-        None => format!(
-            "Данные: {}{backup_note}",
-            storage::data_file_path().display()
-        ),
+        Some(w) => l10n::startup_status_warn(w, &data_path, &backup_note),
+        None => l10n::startup_status(&data_path, &backup_note),
     };
     ui.set_status_message(SharedString::from(startup_msg));
 
@@ -365,7 +369,37 @@ fn main() -> Result<(), slint::PlatformError> {
 
     // Журнал событий: отдельное окно, наполняется при каждом открытии.
     // Вторичные окна: создаются и связываются в одном месте (держим до конца main).
-    let _windows = build_windows(&ui, &state)?;
+    let windows = Rc::new(build_windows(&ui, &state)?);
+    // Язык ко всем окнам (у каждого свой глобал I18n) + подсветка флажка.
+    l10n::apply_i18n(&ui, &windows);
+    ui.set_lang_code(SharedString::from(lang.code()));
+
+    // Смена языка флажком: статические строки переписываются, динамические
+    // (сводка, статусы, заголовки) пересобираются refresh_all. Форму упаковки
+    // не трогаем — пользователь мог не дописать ввод.
+    {
+        let h = ui.as_weak();
+        let s = state.clone();
+        let w = windows.clone();
+        let s_set = settings.clone();
+        ui.on_lang_selected(move |code| {
+            let ui = h.unwrap();
+            let Some(new_lang) = Lang::from_code(code.as_str()) else {
+                return;
+            };
+            apteka_core::i18n::set_lang(new_lang);
+            l10n::apply_i18n(&ui, &w);
+            ui.set_lang_code(SharedString::from(new_lang.code()));
+            let mut st = s.borrow_mut();
+            disarm_delete(&ui);
+            refresh_all(&ui, &mut st, false);
+            validate_pkg_form(&ui, &st);
+            let mut set = s_set.borrow_mut();
+            set.language = new_lang.code().to_string();
+            settings::save_settings(&set);
+        });
+    }
+
     register_misc_cbs(&ui, &state);
     // Часовой пересчёт статусов: подсветка «истекает / просрочено» не устаревает,
     // пока приложение открыто через полночь.
@@ -402,9 +436,12 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Err(e) = storage::save(&st.domain.db) {
                 // окно уже закрыто — статусную строку уже не увидеть,
                 // ошибка только в сообщении
-                message_box(&format!(
-                    "Не удалось сохранить данные при выходе:\n{e}\n\nФайл: {}",
-                    storage::data_file_path().display()
+                message_box(&fmt(
+                    Str::SaveExitError,
+                    &[
+                        &e.to_string(),
+                        &storage::data_file_path().display().to_string(),
+                    ],
                 ));
             }
         }

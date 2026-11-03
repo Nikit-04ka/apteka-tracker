@@ -21,14 +21,23 @@ Cargo workspace (repo root = workspace root): ядро отделено от UI.
 ```
 Cargo.toml                      # workspace
 crates/apteka-core/src/         # lib: model.rs, storage.rs, history.rs
-crates/apteka-tracker/          # bin: build.rs, ui/app.slint, assets/, src/*.rs
-                                #   (main, state, ui_sync, packages, card, windows, misc)
+crates/apteka-tracker/          # bin: build.rs, ui/app.slint, assets/ (icon + flags/*.png), src/*.rs
+                                #   (main, state, ui_sync, packages, card, windows, misc, l10n)
 bin/                            # рабочая копия программы: apteka-tracker.exe + apteka_data.json, settings.json, backups/ (в .gitignore)
 docs/screenshot.png
 ```
 
 ## Conventions
-- Язык интерфейса и пользовательских строк — русский.
+- Интерфейс локализован на 10 языков (`apteka-core::i18n` + `apteka-tracker::l10n`):
+  русский — исходный и язык по умолчанию (тесты рассчитаны на него). Выбор —
+  флажками в строке сводки (`settings.json` → системная локаль → ru). Статические
+  строки .slint живут в `global I18n` (заполняет `l10n::apply_i18n` при старте и
+  по `lang-selected`), строки ядра — `i18n::tr/fmt` (шаблоны `{0}`). Данные
+  (имена, формы в базе, виды событий журнала) хранятся каноном и переводятся при
+  показе; CSV экспортируется переводом, импорт понимает все языки.
+- Для zh/ja задаётся `default-font-family` (Microsoft YaHei / Yu Gothic UI):
+  системный фолбэк без него подбирает японский шрифт и теряет упрощённые
+  иероглифы (проверено скриншотами).
 - Статусы — `i32`-константы: `STATUS_OK=0, STATUS_SOON=1, STATUS_EXPIRED=2, STATUS_EMPTY=3`.
 - Истина — в `UiState.domain.db` (структура `Database`); UI-свойства Slint — только отображение.
 - Сохранение на диск после каждого мутационного колбэка (`persist`).

@@ -1,8 +1,7 @@
 //! Экспорт и импорт CSV: формат программы (разделитель «;», BOM, экранирование кавычек).
 use crate::model::{
     days_left, dispose_reason_text, fmt_date, fmt_date_display, parse_date_input, parse_tags,
-    status_for, status_text, Database, DisposedInfo, Medicine, Package, REASON_DISCARDED,
-    REASON_USED, STATUS_DISPOSED,
+    status_for, status_text, Database, DisposedInfo, Medicine, Package, STATUS_DISPOSED,
 };
 use crate::storage::exe_dir;
 use chrono::Local;
@@ -26,15 +25,18 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
     let today = Local::now().date_naive();
     let mut out = String::new();
     out.push('\u{FEFF}');
-    out.push_str("Лекарство;Форма;Заметки;Срок годности;Дней до конца;Статус;Количество;Цена;Открыта;Списано;Комментарий;Категории;Куплена;Период после вскрытия;ID\r\n");
+    out.push_str(&crate::i18n::csv_headers().join(";"));
+    out.push_str("\r\n");
     for m in &db.medicines {
         let tags_cell = esc(&m.tags.join(", "));
+        // форма пишется переводом (как видит пользователь), импорт вернёт канон
+        let form_cell = crate::i18n::form_display(&m.form);
         if m.packages.is_empty() {
             // колонки 3..10 и 12..13 пусты (нет упаковки), 11 — категории, 14 — ID
             out.push_str(&format!(
                 "{};{};{};;;;;;;;;{};;;{}\r\n",
                 esc(&m.name),
-                esc(&m.form),
+                esc(&form_cell),
                 esc(&m.note),
                 tags_cell,
                 m.id
@@ -47,21 +49,28 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
             let (_status, status_cell) = if let Some(d) = &p.disposed {
                 (
                     STATUS_DISPOSED,
-                    format!("списано ({})", dispose_reason_text(d.reason)),
+                    crate::i18n::fmt(
+                        crate::i18n::Str::CsvDisposedStatus,
+                        &[dispose_reason_text(d.reason)],
+                    ),
                 )
             } else {
                 let s = status_for(days, db.warn_days as i64);
                 (s, status_text(s, days))
             };
             let date_cell = if p.month_only {
-                format!("{} (до конца мес.)", fmt_date_display(p.expiry, true))
+                format!(
+                    "{}{}",
+                    fmt_date_display(p.expiry, true),
+                    crate::i18n::tr(crate::i18n::Str::CsvMonthSuffix)
+                )
             } else {
                 fmt_date(p.expiry)
             };
             let price_cell = p.price.map(|v| format!("{v:.2}")).unwrap_or_default();
             let opened_cell = p
                 .opened
-                .map(|o| format!("открыта {}", fmt_date(o)))
+                .map(|o| crate::i18n::fmt(crate::i18n::Str::CsvOpenedCell, &[&fmt_date(o)]))
                 .unwrap_or_default();
             let disposed_cell = p
                 .disposed
@@ -76,7 +85,7 @@ pub fn export_csv_to(db: &Database, path: &Path) -> io::Result<()> {
             out.push_str(&format!(
                 "{};{};{};{};{};{};{};{};{};{};{};{};{};{};{}\r\n",
                 esc(&m.name),
-                esc(&m.form),
+                esc(&form_cell),
                 esc(&m.note),
                 date_cell,
                 days,
@@ -172,8 +181,14 @@ pub fn parse_csv_text(text: &str) -> Vec<Vec<String>> {
 
 /// Разбор ячейки «Открыта» экспортного формата: «открыта 01.10.2026».
 fn parse_opened_cell(s: &str) -> Option<chrono::NaiveDate> {
-    let rest = s.trim().strip_prefix("открыта ")?;
-    parse_date_input(rest.trim()).map(|(d, _)| d)
+    // «открыта 01.10.2026» — префикс на любом языке из таблицы локализации
+    let s = s.trim();
+    for prefix in crate::i18n::csv_opened_prefixes() {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            return parse_date_input(rest.trim()).map(|(d, _)| d);
+        }
+    }
+    None
 }
 
 /// Разбор ячейки «Списано» экспортного формата: «израсходовано 01.10.2026»,
@@ -183,11 +198,8 @@ fn parse_opened_cell(s: &str) -> Option<chrono::NaiveDate> {
 fn parse_disposed_cell(s: &str) -> Option<DisposedInfo> {
     let (reason_text, date_text) = s.trim().rsplit_once(' ')?;
     let (date, _) = parse_date_input(date_text.trim())?;
-    let reason = if reason_text.trim() == dispose_reason_text(REASON_USED) {
-        REASON_USED
-    } else {
-        REASON_DISCARDED
-    };
+    // причина читается на любом языке экспорта; неизвестная — «выброшено»
+    let reason = crate::i18n::csv_dispose_reason(reason_text);
     Some(DisposedInfo { date, reason })
 }
 
@@ -321,7 +333,13 @@ pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
     for (i, row) in rows.iter().enumerate() {
         // Заголовок нашего экспорта; чужой/лишённый заголовка файл первую
         // строку не теряет — она обрабатывается как данные.
-        if i == 0 && row.first().is_some_and(|h| h.trim() == "Лекарство") {
+        // импорт понимает заголовок на любом языке — файл мог быть
+        // экспортирован в другой локали
+        if i == 0
+            && row
+                .first()
+                .is_some_and(|h| crate::i18n::is_csv_header_first_cell(h))
+        {
             continue;
         }
         if row.len() < 7 {
@@ -341,7 +359,8 @@ pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
             .and_then(|c| c.trim().parse::<i32>().ok())
             .filter(|&id| id > 0)
             .unwrap_or(0);
-        let form = unesc(&row[1]);
+        // форма в CSV пишется переводом — возвращаем каноническое значение
+        let form = crate::i18n::form_canonical(&unesc(&row[1]));
         let note = unesc(&row[2]);
         let tags_src = if row.len() > 11 {
             unesc(&row[11])
@@ -431,6 +450,7 @@ pub fn import_csv(path: &Path) -> io::Result<(Vec<Medicine>, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::{REASON_DISCARDED, REASON_USED};
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::Arc;
 

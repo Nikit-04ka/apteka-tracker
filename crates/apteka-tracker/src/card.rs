@@ -1,6 +1,7 @@
 // Карточка лекарства: правки полей, фото упаковок, колбёки (F6).
 
 use apteka_core::chrono::Local;
+use apteka_core::i18n::{self, canonical, fmt, tr, Str};
 use apteka_core::state::{EditKind, GLOBAL_SCOPE};
 use image::ImageDecoder;
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
@@ -41,7 +42,7 @@ struct Thumbnail {
 fn make_thumbnail(src: &std::path::Path) -> Result<Thumbnail, String> {
     let mut reader = image::ImageReader::open(src)
         .and_then(|r| r.with_guessed_format())
-        .map_err(|e| format!("файл не читается: {e}"))?;
+        .map_err(|e| fmt(Str::PhotoReadError, &[&e.to_string()]))?;
     // лимиты декодера: легальный PNG может объявлять огромные размеры
     // (декомпрессионная бомба) — без лимита это OOM-abort приложения
     let mut limits = image::Limits::default();
@@ -55,10 +56,10 @@ fn make_thumbnail(src: &std::path::Path) -> Result<Thumbnail, String> {
     };
     let mut decoder = reader
         .into_decoder()
-        .map_err(|e| format!("изображение не декодируется: {e}"))?;
+        .map_err(|e| fmt(Str::PhotoDecodeError, &[&e.to_string()]))?;
     let orientation = decoder.orientation().map_err(|e| e.to_string())?;
     let mut img = image::DynamicImage::from_decoder(decoder)
-        .map_err(|e| format!("изображение не декодируется: {e}"))?;
+        .map_err(|e| fmt(Str::PhotoDecodeError, &[&e.to_string()]))?;
     img.apply_orientation(orientation);
     // уменьшаем только крупные: маленькие изображения не растягиваются
     if img.width() > PHOTO_THUMB_MAX || img.height() > PHOTO_THUMB_MAX {
@@ -83,7 +84,7 @@ pub(crate) fn copy_photo_to_store_in(
     src: &std::path::Path,
     pid: i32,
 ) -> Result<String, String> {
-    std::fs::create_dir_all(dir).map_err(|e| format!("Не удалось создать папку photos: {e}"))?;
+    std::fs::create_dir_all(dir).map_err(|e| fmt(Str::PhotoDirError, &[&e.to_string()]))?;
     let thumb = make_thumbnail(src)?;
     let fname = unique_photo_name(pid, thumb.ext);
     let dst = dir.join(&fname);
@@ -91,7 +92,7 @@ pub(crate) fn copy_photo_to_store_in(
         "png" => thumb.image.save_with_format(&dst, image::ImageFormat::Png),
         _ => thumb.image.save_with_format(&dst, image::ImageFormat::Jpeg),
     };
-    result.map_err(|e| format!("Не удалось сохранить миниатюру фото: {e}"))?;
+    result.map_err(|e| fmt(Str::PhotoSaveError, &[&e.to_string()]))?;
     Ok(fname)
 }
 
@@ -101,7 +102,9 @@ pub(crate) fn empty_placeholder_id(db: &Database) -> Option<i32> {
     db.medicines
         .iter()
         .find(|m| {
-            m.name == "Новое лекарство"
+            // имя-плейсхолдер распознаётся на любом языке — данные переезжают
+            // между языками вместе с файлом
+            i18n::is_new_medicine_placeholder(&m.name)
                 && m.form == FORMS[0]
                 && m.note.is_empty()
                 && m.tags.is_empty()
@@ -129,7 +132,7 @@ pub(crate) fn register_card_cbs(
         reset_view_flags(&ui);
         update_details(&ui, &mut st, true);
         if had_form {
-            set_status_info(&ui, "Несохранённая форма упаковки очищена".to_string());
+            set_status_info(&ui, tr(Str::FormCleared).to_string());
         }
     });
 
@@ -148,16 +151,14 @@ pub(crate) fn register_card_cbs(
             ui.set_selected_id(id);
             reset_view_flags(&ui);
             refresh_all(&ui, &mut st, true);
-            ui.set_status_message(SharedString::from(
-                "Уже есть пустое «Новое лекарство» — открываем его",
-            ));
+            ui.set_status_message(SharedString::from(tr(Str::PlaceholderExists)));
             return;
         }
         let prev = st.domain.db.clone();
         let id = st.domain.db.new_med_id();
         st.domain.db.medicines.push(Arc::new(Medicine {
             id,
-            name: "Новое лекарство".to_string(),
+            name: tr(Str::NewMedicineName).to_string(),
             form: FORMS[0].to_string(),
             note: String::new(),
             tags: Vec::new(),
@@ -165,7 +166,7 @@ pub(crate) fn register_card_cbs(
         }));
         st.domain
             .db
-            .journal_push("лекарство добавлено", "Новое лекарство", "");
+            .journal_push(canonical(Str::JrnMedAdded), tr(Str::NewMedicineName), "");
         st.selected_id = id;
         st.search.clear();
         st.filter_idx = 0;
@@ -185,7 +186,9 @@ pub(crate) fn register_card_cbs(
         let name = st.selected().map(|m| m.name.clone());
         st.domain.db.medicines.retain(|m| m.id != sel);
         if let Some(n) = &name {
-            st.domain.db.journal_push("лекарство удалено", n, "");
+            st.domain
+                .db
+                .journal_push(canonical(Str::JrnMedDeleted), n, "");
         }
         st.selected_id = -1;
         ui.set_selected_id(-1);
@@ -195,7 +198,7 @@ pub(crate) fn register_card_cbs(
         commit_refresh_persist(&ui, &mut st, prev, true);
         if let Some(n) = &name {
             // факт и способ отката — словами, а не только в журнале
-            set_status_info(&ui, format!("Удалено: «{n}» — вернуть: Ctrl+Z"));
+            set_status_info(&ui, fmt(Str::DeletedMedicine, &[n]));
         }
     });
 
@@ -203,10 +206,7 @@ pub(crate) fn register_card_cbs(
     // лекарства знает только Rust — подсказка о втором нажатии идёт в статус
     with_state!(ui, state, on_delete_arm_hint, |ui, st| {
         if let Some(m) = st.selected() {
-            ui.set_status_message(SharedString::from(format!(
-                "Удалить «{}»? Нажмите Delete ещё раз (Esc — отмена)",
-                m.name
-            )));
+            ui.set_status_message(SharedString::from(fmt(Str::DeleteArmHint, &[&m.name])));
         }
     });
 
@@ -322,7 +322,7 @@ pub(crate) fn register_card_cbs(
         st.tag_filter = model
             .row_data(idx as usize)
             .map(|s| s.to_string())
-            .filter(|s| s != "Все категории");
+            .filter(|s| s != tr(Str::AllCategories));
         rebuild_list(&ui, &st);
     });
 

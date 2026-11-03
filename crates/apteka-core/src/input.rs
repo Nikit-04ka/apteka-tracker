@@ -16,7 +16,11 @@ pub struct PackageInput {
     pub open_period_days: Option<i32>,
 }
 
-const HINT_FORMAT: &str = "Формат: ГГГГ-ММ-ДД, ДД.ММ.ГГГГ или ММ.ГГГГ (годен до конца месяца)";
+/// Подсказка о формате даты (нейтральное сообщение, а не ошибка). Текст —
+/// из таблицы локализации; `validate_pkg_form` узнаёт его по равенству.
+fn hint_format() -> String {
+    crate::i18n::tr(crate::i18n::Str::FmtHint).to_string()
+}
 
 /// Разбор и валидация полей формы упаковки.
 /// `Ok` — все поля корректны; `Err(сообщение)` — текст для показа пользователю
@@ -28,23 +32,23 @@ pub fn parse_package_input(
 ) -> Result<PackageInput, String> {
     let expiry_trimmed = expiry.trim();
     if expiry_trimmed.is_empty() {
-        return Err(HINT_FORMAT.to_string());
+        return Err(hint_format());
     }
     let Some((expiry, month_only)) = parse_date_input(expiry_trimmed) else {
-        return Err("Неверная дата".to_string());
+        return Err(crate::i18n::tr(crate::i18n::Str::BadDate).to_string());
     };
     let open_period_days = match period.trim() {
         "" => None,
         t => match t.parse::<i32>() {
             Ok(v) if (1..=3650).contains(&v) => Some(v),
-            _ => return Err("Период после вскрытия: целое число дней от 1 до 3650".to_string()),
+            _ => return Err(crate::i18n::tr(crate::i18n::Str::PeriodError).to_string()),
         },
     };
     let price = match price.trim() {
         "" => None,
         t => match t.replace(',', ".").parse::<f64>() {
             Ok(v) if (0.0..=1_000_000.0).contains(&v) => Some(v),
-            _ => return Err("Цена: число, например 350 или 249.99".to_string()),
+            _ => return Err(crate::i18n::tr(crate::i18n::Str::PriceError).to_string()),
         },
     };
     Ok(PackageInput {
@@ -86,12 +90,7 @@ impl PackageForm {
             "" => None,
             t => match parse_date_input(t) {
                 Some((d, _)) => Some(d),
-                None => {
-                    return Err(
-                        "Дата покупки: ГГГГ-ММ-ДД или ДД.ММ.ГГГГ (можно оставить пустым)"
-                            .to_string(),
-                    )
-                }
+                None => return Err(crate::i18n::tr(crate::i18n::Str::BuyDateError).to_string()),
             },
         };
         Ok(Self {
@@ -156,6 +155,13 @@ fn fill_hay(hay: &mut String, m: &Medicine) {
     hay.push_str(&m.name);
     hay.push(' ');
     hay.push_str(&m.form);
+    // форма ищется и в переводе: на экране она показывается переводом,
+    // пользователь вводит её так, как видит
+    let shown = crate::i18n::form_display(&m.form);
+    if shown != m.form {
+        hay.push(' ');
+        hay.push_str(&shown);
+    }
     hay.push(' ');
     hay.push_str(&m.note);
     hay.push(' ');

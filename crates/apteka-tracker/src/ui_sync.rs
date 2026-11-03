@@ -1,5 +1,6 @@
 // Сборка строк и моделей UI из домена + обновления списков и статусов.
 
+use apteka_core::i18n::{fmt, month_name, tr, Str};
 use apteka_core::input::{all_tags, cal_grid, move_selection_index, visible_medicines};
 use slint::{Model, ModelRc, SharedString, VecModel};
 
@@ -8,36 +9,23 @@ use crate::packages::*;
 use crate::state::*;
 use crate::*;
 
-pub(crate) const MONTHS_RU: [&str; 12] = [
-    "Январь",
-    "Февраль",
-    "Март",
-    "Апрель",
-    "Май",
-    "Июнь",
-    "Июль",
-    "Август",
-    "Сентябрь",
-    "Октябрь",
-    "Ноябрь",
-    "Декабрь",
-];
-
 pub(crate) fn build_med_row(m: &Medicine, info: &MedInfo) -> MedicineRow {
     let active = m.packages.iter().filter(|p| !p.is_disposed()).count();
     let subtitle = match info.nearest {
         None => {
             if m.packages.is_empty() {
-                "нет упаковок — добавьте первую".to_string()
+                tr(Str::MedNoPackages).to_string()
             } else {
-                format!("активных упаковок нет (списано: {})", m.packages.len())
+                fmt(Str::MedAllDisposed, &[&m.packages.len().to_string()])
             }
         }
-        Some(d) => format!(
-            "ближайший срок: {} · упаковок: {} · {}",
-            fmt_date_display(d, info.nearest_month_only),
-            active,
-            status_text(info.status, info.nearest_days)
+        Some(d) => fmt(
+            Str::MedNearest,
+            &[
+                &fmt_date_display(d, info.nearest_month_only),
+                &active.to_string(),
+                &status_text(info.status, info.nearest_days),
+            ],
         ),
     };
     MedicineRow {
@@ -84,7 +72,7 @@ where
 /// Обновляет выпадающий список категорий: «Все категории» + теги базы.
 /// Выбранная категория сохраняется, если ещё существует.
 pub(crate) fn refresh_tag_options(ui: &AppWindow, st: &mut UiState) {
-    let mut options = vec!["Все категории".to_string()];
+    let mut options = vec![tr(Str::AllCategories).to_string()];
     options.extend(all_tags(&st.domain.db));
     let idx = st
         .tag_filter
@@ -125,9 +113,9 @@ pub(crate) fn rebuild_list(ui: &AppWindow, st: &UiState) {
 
     ui.set_list_empty_text(SharedString::from(
         if st.search.is_empty() && st.filter_idx == 0 {
-            "Аптечка пуста.\nНажмите «+ Добавить лекарство»."
+            tr(Str::ListEmpty)
         } else {
-            "Ничего не найдено.\nИзмените поиск или фильтр."
+            tr(Str::ListNoResults)
         },
     ));
 }
@@ -147,16 +135,21 @@ pub(crate) fn update_summary(ui: &AppWindow, st: &UiState) {
             _ => {}
         }
     }
-    ui.set_summary_total(SharedString::from(format!(
-        "Лекарств: {} · Упаковок: {}",
-        st.domain.db.medicines.len(),
-        packages
+    ui.set_summary_total(SharedString::from(fmt(
+        Str::SummaryTotal,
+        &[
+            &st.domain.db.medicines.len().to_string(),
+            &packages.to_string(),
+        ],
     )));
-    ui.set_summary_soon(SharedString::from(format!(
-        "Истекают (≤{} дн.): {}",
-        st.domain.db.warn_days, soon
+    ui.set_summary_soon(SharedString::from(fmt(
+        Str::SummarySoon,
+        &[&st.domain.db.warn_days.to_string(), &soon.to_string()],
     )));
-    ui.set_summary_expired(SharedString::from(format!("Просрочено: {}", expired)));
+    ui.set_summary_expired(SharedString::from(fmt(
+        Str::SummaryExpired,
+        &[&expired.to_string()],
+    )));
 
     // Цена и признак «есть хоть одна указанная цена»: без него чип показывает
     // честный ноль там, где данные просто не введены — это выглядит как потеря
@@ -176,9 +169,9 @@ pub(crate) fn update_summary(ui: &AppWindow, st: &UiState) {
         }
     }
     ui.set_summary_cost(SharedString::from(if priced {
-        format!("Стоимость: {cost:.0} руб.")
+        fmt(Str::SummaryCost, &[&format!("{cost:.0}")])
     } else {
-        "Стоимость: —".to_string()
+        tr(Str::SummaryCostNone).to_string()
     }));
 }
 
@@ -232,13 +225,18 @@ pub(crate) fn update_details_readonly(ui: &AppWindow, st: &UiState) {
             } else {
                 Some(m.form.as_str())
             };
-            let model_custom = ui
-                .get_form_options()
-                .row_data(FORMS.len())
-                .map(|s| s.to_string());
-            if model_custom.as_deref() != custom {
-                let mut options: Vec<SharedString> =
-                    FORMS.iter().map(|s| SharedString::from(*s)).collect();
+            let model = ui.get_form_options();
+            let model_custom = model.row_data(FORMS.len()).map(|s| s.to_string());
+            // модель пересобирается и при смене языка: первая строка — перевод
+            // канонической формы, и он меняется вместе с языком
+            let forms_stale = model.row_data(0).map(|s| s.to_string()).as_deref()
+                != Some(apteka_core::i18n::form_display(FORMS[0]).as_str());
+            if forms_stale || model_custom.as_deref() != custom {
+                // формы показываются переводом, в базе хранится канон (FORMS)
+                let mut options: Vec<SharedString> = FORMS
+                    .iter()
+                    .map(|f| SharedString::from(apteka_core::i18n::form_display(f)))
+                    .collect();
                 if let Some(f) = custom {
                     options.push(SharedString::from(f));
                 }
@@ -278,7 +276,7 @@ pub(crate) fn move_selection(ui: &AppWindow, st: &mut UiState, delta: i32) {
     reset_view_flags(ui);
     update_details(ui, st, true);
     if had_form {
-        set_status_info(ui, "Несохранённая форма упаковки очищена".to_string());
+        set_status_info(ui, tr(Str::FormCleared).to_string());
     }
 }
 
@@ -303,10 +301,9 @@ pub(crate) fn cal_rebuild(ui: &AppWindow, st: &UiState) {
         })
         .collect();
     ui.set_cal_weeks(ModelRc::from(Rc::new(VecModel::from(rows))));
-    ui.set_cal_month_label(SharedString::from(format!(
-        "{} {}",
-        MONTHS_RU[(st.cal_month - 1) as usize],
-        st.cal_year
+    ui.set_cal_month_label(SharedString::from(fmt(
+        Str::CalLabel,
+        &[month_name(st.cal_month), &st.cal_year.to_string()],
     )));
 }
 

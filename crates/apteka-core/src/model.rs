@@ -44,10 +44,11 @@ pub struct DisposedInfo {
 }
 
 pub fn dispose_reason_text(reason: i32) -> &'static str {
+    use crate::i18n::{tr, Str};
     match reason {
-        REASON_USED => "израсходовано",
-        REASON_DISCARDED => "выброшено",
-        _ => "списано",
+        REASON_USED => tr(Str::ReasonUsed),
+        REASON_DISCARDED => tr(Str::ReasonDiscarded),
+        _ => tr(Str::StDisposed),
     }
 }
 
@@ -431,24 +432,26 @@ pub fn status_for(days: i64, warn_days: i64) -> i32 {
 
 /// Развёрнутый текст статуса для деталей и CSV.
 pub fn status_text(status: i32, days: i64) -> String {
+    use crate::i18n::{fmt, Str};
     match status {
-        STATUS_EXPIRED => format!("просрочено {} дн. назад", -days),
-        STATUS_SOON if days == 0 => "истекает сегодня".to_string(),
-        STATUS_SOON => format!("истекает через {} дн.", days),
-        STATUS_OK => format!("годен ещё {} дн.", days),
-        STATUS_DISPOSED => "списано".to_string(),
-        _ => "нет упаковок".to_string(),
+        STATUS_EXPIRED => fmt(Str::StExpired, &[&(-days).to_string()]),
+        STATUS_SOON if days == 0 => fmt(Str::StToday, &[]),
+        STATUS_SOON => fmt(Str::StSoon, &[&days.to_string()]),
+        STATUS_OK => fmt(Str::StOk, &[&days.to_string()]),
+        STATUS_DISPOSED => fmt(Str::StDisposed, &[]),
+        _ => fmt(Str::StEmpty, &[]),
     }
 }
 
 /// Короткий текст статуса для строки списка.
 pub fn days_short(status: i32, days: i64) -> String {
+    use crate::i18n::{fmt, Str};
     match status {
-        STATUS_EXPIRED => format!("-{} дн.", -days),
-        STATUS_SOON if days == 0 => "сегодня".to_string(),
-        STATUS_SOON => format!("{} дн.", days),
-        STATUS_OK => format!("{} дн.", days),
-        _ => "—".to_string(),
+        STATUS_EXPIRED => fmt(Str::DaysExpired, &[&(-days).to_string()]),
+        STATUS_SOON if days == 0 => fmt(Str::DaysToday, &[]),
+        STATUS_SOON => fmt(Str::DaysN, &[&days.to_string()]),
+        STATUS_OK => fmt(Str::DaysN, &[&days.to_string()]),
+        _ => fmt(Str::DaysNone, &[]),
     }
 }
 
@@ -538,27 +541,31 @@ pub fn shopping_list(db: &Database, today: NaiveDate) -> Vec<String> {
                 continue;
             }
             let when = if days < 0 {
-                format!("ПРОСРОЧЕНО на {} дн.", -days)
+                crate::i18n::fmt(crate::i18n::Str::ShopExpired, &[&(-days).to_string()])
             } else if days == 0 {
-                "истекает сегодня".to_string()
+                crate::i18n::fmt(crate::i18n::Str::StToday, &[])
             } else {
-                format!("осталось {} дн.", days)
+                crate::i18n::fmt(crate::i18n::Str::ShopSoon, &[&days.to_string()])
             };
-            rows.push(format!(
-                "{} ({}): {} — {}, годен до {}",
-                m.name,
-                if m.form.is_empty() {
-                    "без формы"
-                } else {
-                    &m.form
-                },
-                if p.quantity.is_empty() {
-                    "упаковка"
-                } else {
-                    &p.quantity
-                },
-                when,
-                fmt_date_display(eff, p.month_only && eff == p.expiry),
+            let form = if m.form.is_empty() {
+                crate::i18n::tr(crate::i18n::Str::ShopNoForm).to_string()
+            } else {
+                crate::i18n::form_display(&m.form)
+            };
+            let quantity = if p.quantity.is_empty() {
+                crate::i18n::tr(crate::i18n::Str::ShopPkgCount).to_string()
+            } else {
+                p.quantity.clone()
+            };
+            rows.push(crate::i18n::fmt(
+                crate::i18n::Str::ShopRow,
+                &[
+                    &m.name,
+                    &form,
+                    &quantity,
+                    &when,
+                    &fmt_date_display(eff, p.month_only && eff == p.expiry),
+                ],
             ));
         }
     }

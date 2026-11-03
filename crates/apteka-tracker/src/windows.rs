@@ -1,6 +1,7 @@
 // Вторичные окна: журнал, отчёты, покупки, бэкапы, импорт (F6).
 
 use apteka_core::csv;
+use apteka_core::i18n::{canonical, fmt, tr, Str};
 use slint::{ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,7 +16,7 @@ use crate::*;
 /// « (2 без цены)» — упаковки, учтённые в количестве, но не в денежной сумме.
 fn unpriced_note(unpriced: usize) -> String {
     if unpriced > 0 {
-        format!(" ({unpriced} без цены)")
+        fmt(Str::RepUnpriced, &[&unpriced.to_string()])
     } else {
         String::new()
     }
@@ -28,6 +29,22 @@ pub(crate) struct SecondaryWindows {
     _shopping: ShoppingWindow,
     _backups: BackupsWindow,
     _import: ImportWindow,
+}
+
+impl SecondaryWindows {
+    /// Применяет текущий язык ко всем вторичным окнам: у каждого компонента
+    /// свой экземпляр глобала I18n.
+    pub(crate) fn apply_i18n(&self) {
+        for g in [
+            self._journal.global::<I18n>(),
+            self._reports.global::<I18n>(),
+            self._shopping.global::<I18n>(),
+            self._backups.global::<I18n>(),
+            self._import.global::<I18n>(),
+        ] {
+            crate::l10n::apply_i18n_global(&g);
+        }
+    }
 }
 
 /// Создаёт вторичные окна (журнал, отчёты, покупки, бэкапы, импорт) и
@@ -53,61 +70,71 @@ pub(crate) fn build_windows(
             let mut lines: Vec<String> = Vec::new();
             let disposals = disposals_by_year(&st.domain.db);
             if disposals.is_empty() {
-                lines.push("Списания: пока ни одной упаковки не списано.".to_string());
+                lines.push(tr(Str::RepDisposalsNone).to_string());
             } else {
-                lines.push("Списания по годам:".to_string());
+                lines.push(tr(Str::RepDisposals).to_string());
                 for r in &disposals {
-                    lines.push(format!(
-                        "  {} — {} уп. · {:.2} руб.{}",
-                        r.year,
-                        r.count,
-                        r.sum,
-                        unpriced_note(r.unpriced)
+                    lines.push(fmt(
+                        Str::RepYearRow,
+                        &[
+                            &r.year.to_string(),
+                            &r.count.to_string(),
+                            &format!("{:.2}", r.sum),
+                            &unpriced_note(r.unpriced),
+                        ],
                     ));
                 }
                 let total_c: usize = disposals.iter().map(|r| r.count).sum();
                 let total_s: f64 = disposals.iter().map(|r| r.sum).sum();
                 let total_u: usize = disposals.iter().map(|r| r.unpriced).sum();
-                lines.push(format!(
-                    "  Всего: {total_c} уп. · {total_s:.2} руб.{}",
-                    unpriced_note(total_u)
+                lines.push(fmt(
+                    Str::RepTotal,
+                    &[
+                        &total_c.to_string(),
+                        &format!("{total_s:.2}"),
+                        &unpriced_note(total_u),
+                    ],
                 ));
             }
             lines.push(String::new());
             let purchases = purchases_by_year(&st.domain.db);
             if purchases.is_empty() {
-                lines.push(
-                    "Покупки: даты не отмечены — заполните поле «Куплена» у упаковки.".to_string(),
-                );
+                lines.push(tr(Str::RepPurchasesNone).to_string());
             } else {
-                lines.push("Покупки по годам:".to_string());
+                lines.push(tr(Str::RepPurchases).to_string());
                 for r in &purchases {
-                    lines.push(format!(
-                        "  {} — {} уп. · {:.2} руб.{}",
-                        r.year,
-                        r.count,
-                        r.sum,
-                        unpriced_note(r.unpriced)
+                    lines.push(fmt(
+                        Str::RepYearRow,
+                        &[
+                            &r.year.to_string(),
+                            &r.count.to_string(),
+                            &format!("{:.2}", r.sum),
+                            &unpriced_note(r.unpriced),
+                        ],
                     ));
                 }
                 let total_c: usize = purchases.iter().map(|r| r.count).sum();
                 let total_s: f64 = purchases.iter().map(|r| r.sum).sum();
                 let total_u: usize = purchases.iter().map(|r| r.unpriced).sum();
-                lines.push(format!(
-                    "  Всего с датой покупки: {total_c} уп. · {total_s:.2} руб.{}",
-                    unpriced_note(total_u)
+                lines.push(fmt(
+                    Str::RepTotalPurchases,
+                    &[
+                        &total_c.to_string(),
+                        &format!("{total_s:.2}"),
+                        &unpriced_note(total_u),
+                    ],
                 ));
             }
             lines.push(String::new());
             lines.push(match oldest_active_package(&st.domain.db) {
-                Some(p) => format!(
-                    "Самая старая активная упаковка годна до {}",
-                    fmt_date_display(
+                Some(p) => fmt(
+                    Str::RepOldest,
+                    &[&fmt_date_display(
                         p.effective_expiry(),
-                        p.month_only && p.effective_expiry() == p.expiry
-                    )
+                        p.month_only && p.effective_expiry() == p.expiry,
+                    )],
                 ),
-                None => "Активных упаковок нет.".to_string(),
+                None => tr(Str::RepNoActive).to_string(),
             });
             j.set_lines(ModelRc::from(Rc::new(VecModel::from(
                 lines
@@ -133,17 +160,21 @@ pub(crate) fn build_windows(
             if st.domain.db.events.len() >= EVENTS_CAP {
                 // журнал хранит ограниченное число событий — говорим об усечении,
                 // а не показываем «все» события молча
-                rows.push(SharedString::from(format!(
-                    "Показаны последние {EVENTS_CAP} событий — более старые вытеснены."
+                rows.push(SharedString::from(fmt(
+                    Str::JrnTruncated,
+                    &[&EVENTS_CAP.to_string()],
                 )));
             }
             rows.extend(st.domain.db.events.iter().rev().map(|e| {
-                SharedString::from(format!(
-                    "{} · {} — {} {}",
-                    e.at.format("%d.%m.%Y %H:%M"),
-                    e.medicine,
-                    e.kind,
-                    e.package
+                // вид события хранится каноном — при показе переводим
+                SharedString::from(fmt(
+                    Str::JrnRow,
+                    &[
+                        &e.at.format("%d.%m.%Y %H:%M").to_string(),
+                        &e.medicine,
+                        &apteka_core::i18n::journal_kind_display(&e.kind),
+                        &e.package,
+                    ],
                 ))
             }));
             j.set_events(ModelRc::from(Rc::new(VecModel::from(rows))));
@@ -171,7 +202,7 @@ pub(crate) fn build_windows(
             let j = jh.unwrap();
             let model = j.get_lines();
             if model.row_count() == 0 {
-                j.set_note(SharedString::from("Список пуст — нечего копировать."));
+                j.set_note(SharedString::from(tr(Str::ShopCopyEmpty)));
                 return;
             }
             let text: String = (0..model.row_count())
@@ -180,10 +211,10 @@ pub(crate) fn build_windows(
                 .join("\n");
             let note = match arboard::Clipboard::new() {
                 Ok(mut cb) => match cb.set_text(text.clone()) {
-                    Ok(()) => format!("Скопировано в буфер обмена ({} поз.)", text.lines().count()),
-                    Err(e) => format!("Не удалось скопировать: {e}"),
+                    Ok(()) => fmt(Str::ShopCopied, &[&text.lines().count().to_string()]),
+                    Err(e) => fmt(Str::ShopCopyFail, &[&e.to_string()]),
                 },
-                Err(e) => format!("Не удалось скопировать: {e}"),
+                Err(e) => fmt(Str::ShopCopyFail, &[&e.to_string()]),
             };
             j.set_note(SharedString::from(note));
         });
@@ -233,26 +264,23 @@ pub(crate) fn build_windows(
             let Some(path) = files.borrow().get(idx as usize).cloned() else {
                 // список набирался при открытии окна: файлы могли исчезнуть —
                 // молча ничего не делаем нельзя, пользователь ждёт результат
-                j.set_note(SharedString::from(
-                    "Список копий устарел — закройте и заново откройте окно «Бэкапы»",
-                ));
+                j.set_note(SharedString::from(tr(Str::BakStaleList)));
                 return;
             };
             // страховка: текущее состояние — в бэкап, и его же можно вернуть Ctrl+Z.
             // Если страховочный бэкап создать не удалось — восстановление отменяем:
             // иначе сбой диска приведёт к безвозвратной потере текущих данных.
             if let Err(e) = storage::backup() {
-                j.set_note(SharedString::from(format!(
-                    "Не удалось сохранить бэкап текущих данных ({e}) — восстановление отменено."
+                j.set_note(SharedString::from(fmt(
+                    Str::BakBackupFailed,
+                    &[&e.to_string()],
                 )));
                 return;
             }
             let db = match storage::load_database_from(&path) {
                 Ok(db) => db,
                 Err(e) => {
-                    j.set_note(SharedString::from(format!(
-                        "Не удалось восстановить: {e}. Текущие данные не тронуты."
-                    )));
+                    j.set_note(SharedString::from(fmt(Str::BakRestoreFailed, &[&e])));
                     return;
                 }
             };
@@ -274,11 +302,9 @@ pub(crate) fn build_windows(
             refresh_all(&ui, &mut st, true);
             st.domain
                 .db
-                .journal_push("восстановлено из бэкапа", &fname, "");
+                .journal_push(canonical(Str::JrnRestoredBackup), &fname, "");
             persist(&ui, &st);
-            j.set_note(SharedString::from(format!(
-                "Восстановлено: {fname} (отменить — Ctrl+Z)"
-            )));
+            j.set_note(SharedString::from(fmt(Str::BakRestored, &[&fname])));
         });
     }
     {
@@ -335,20 +361,21 @@ pub(crate) fn build_windows(
             let ui = h.unwrap();
             let j = jh.unwrap();
             let Some(path) = files.borrow().get(idx as usize).cloned() else {
-                j.set_note(SharedString::from(
-                    "Список файлов устарел — закройте и заново откройте окно импорта",
-                ));
+                j.set_note(SharedString::from(tr(Str::ImportStaleList)));
                 return;
             };
             let (meds, skipped) = match csv::import_csv(&path) {
                 Ok(r) => r,
                 Err(e) => {
-                    j.set_note(SharedString::from(format!("Ошибка чтения: {e}")));
+                    j.set_note(SharedString::from(fmt(
+                        Str::ImportReadError,
+                        &[&e.to_string()],
+                    )));
                     return;
                 }
             };
             if meds.is_empty() {
-                j.set_note(SharedString::from("В файле нет корректных строк."));
+                j.set_note(SharedString::from(tr(Str::ImportNoRows)));
                 return;
             }
             let mut st = s.borrow_mut();
@@ -372,12 +399,12 @@ pub(crate) fn build_windows(
             let mut meds = kept_meds;
             if meds.is_empty() {
                 let note = if duplicates > 0 {
-                    format!(
-                        "Все лекарства из файла уже есть в аптечке (дублей: {duplicates}): {}.",
-                        dropped_names(5)
+                    fmt(
+                        Str::ImportAllDup,
+                        &[&duplicates.to_string(), &dropped_names(5)],
                     )
                 } else {
-                    "В файле нет корректных строк.".to_string()
+                    tr(Str::ImportNoRows).to_string()
                 };
                 j.set_note(SharedString::from(note));
                 return;
@@ -391,24 +418,35 @@ pub(crate) fn build_windows(
                     total_pkgs += 1;
                 }
                 st.domain.db.journal_push(
-                    "импорт из CSV",
+                    canonical(Str::JrnImport),
                     &m.name,
-                    &format!("упаковок: {}", m.packages.len()),
+                    &fmt(Str::JrnImportPkgs, &[&m.packages.len().to_string()]),
                 );
             }
             let imported_count = meds.len();
-            st.domain.db.medicines.extend(meds.into_iter().map(Arc::new));
+            st.domain
+                .db
+                .medicines
+                .extend(meds.into_iter().map(Arc::new));
             st.selected_id = -1;
             ui.set_selected_id(-1);
             clear_photo_cache(&st);
             reset_view_flags(&ui);
             commit_refresh_persist(&ui, &mut st, prev, true);
-            let mut note = format!(
-                "Импортировано лекарств: {imported_count} (упаковок: {total_pkgs}, пропущено строк: {skipped}",
+            let mut note = fmt(
+                Str::ImportDone,
+                &[
+                    &imported_count.to_string(),
+                    &total_pkgs.to_string(),
+                    &skipped.to_string(),
+                ],
             );
             if duplicates > 0 {
                 // имена отброшенных — чтобы правки в файле не пропадали молча
-                note.push_str(&format!(", дублей пропущено: {duplicates} ({})", dropped_names(5)));
+                note.push_str(&fmt(
+                    Str::ImportDoneDup,
+                    &[&duplicates.to_string(), &dropped_names(5)],
+                ));
             }
             note.push(')');
             j.set_note(SharedString::from(note));

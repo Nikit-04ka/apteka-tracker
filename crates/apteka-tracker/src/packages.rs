@@ -2,6 +2,7 @@
 
 use apteka_core::chrono::Months;
 use apteka_core::csv;
+use apteka_core::i18n::{canonical, fmt, tr, Str};
 use apteka_core::input::{parse_package_input, PackageForm};
 use slint::{ComponentHandle, SharedString};
 use std::cell::RefCell;
@@ -22,7 +23,7 @@ pub(crate) fn rebuild_packages(ui: &AppWindow, st: &UiState) {
             |model| ui.set_packages(model),
             Vec::new(),
         );
-        ui.set_packages_header(SharedString::from("Упаковки"));
+        ui.set_packages_header(SharedString::from(tr(Str::PackagesHeader)));
         return;
     };
     let t = today();
@@ -41,23 +42,22 @@ pub(crate) fn rebuild_packages(ui: &AppWindow, st: &UiState) {
         .map(|p| {
             let eff = p.effective_expiry();
             let (days, status, days_text) = if let Some(_d) = &p.disposed {
-                (0, STATUS_DISPOSED, "списано".to_string())
+                (0, STATUS_DISPOSED, tr(Str::StDisposed).to_string())
             } else {
                 let days = days_left(eff, t);
                 let s = status_for(days, warn);
                 (days, s, days_short(s, days))
             };
             let opened_info = if let Some(d) = &p.disposed {
-                format!(
-                    "списано {} ({})",
-                    fmt_date(d.date),
-                    dispose_reason_text(d.reason)
+                fmt(
+                    Str::DisposedCell,
+                    &[&fmt_date(d.date), dispose_reason_text(d.reason)],
                 )
             } else if let Some(o) = p.opened {
                 if p.open_period_days.is_some() {
-                    format!("открыта {} · годен до {}", fmt_date(o), fmt_date(eff))
+                    fmt(Str::OpenedWithPeriod, &[&fmt_date(o), &fmt_date(eff)])
                 } else {
-                    format!("открыта {} · без периода после вскрытия", fmt_date(o))
+                    fmt(Str::OpenedNoPeriod, &[&fmt_date(o)])
                 }
             } else {
                 String::new()
@@ -93,7 +93,7 @@ pub(crate) fn rebuild_packages(ui: &AppWindow, st: &UiState) {
                 quantity: p.quantity.clone().into(),
                 price: p
                     .price
-                    .map(|v| format!("{v:.2} руб."))
+                    .map(|v| fmt(Str::PriceValue, &[&format!("{v:.2}")]))
                     .unwrap_or_default()
                     .into(),
                 note: p.note.clone().into(),
@@ -111,21 +111,21 @@ pub(crate) fn rebuild_packages(ui: &AppWindow, st: &UiState) {
 
     let disposed_count = m.packages.iter().filter(|p| p.is_disposed()).count();
     let header = if disposed_count > 0 {
-        format!("Упаковки ({}, списано: {})", rows.len(), disposed_count)
+        fmt(
+            Str::PackagesCountDisposed,
+            &[&rows.len().to_string(), &disposed_count.to_string()],
+        )
     } else {
-        format!("Упаковки ({})", rows.len())
+        fmt(Str::PackagesCount, &[&rows.len().to_string()])
     };
     ui.set_packages_header(SharedString::from(header));
 
     // Пустой список: разный текст в зависимости от причины
     let total = m.packages.len();
     let empty_text = if total == 0 {
-        "Упаковок пока нет. Заполните форму ниже и нажмите «Добавить упаковку».".to_string()
+        tr(Str::PackagesEmpty).to_string()
     } else {
-        format!(
-            "Все упаковки списаны ({}). Нажмите «Показать списанные», чтобы увидеть их, или добавьте новую — форма ниже.",
-            total
-        )
+        fmt(Str::PackagesAllDisposed, &[&total.to_string()])
     };
     ui.set_packages_empty_text(SharedString::from(empty_text));
     sync_model(|| ui.get_packages(), |model| ui.set_packages(model), rows);
@@ -135,9 +135,9 @@ pub(crate) fn rebuild_packages(ui: &AppWindow, st: &UiState) {
 /// и периода после вскрытия), месяцный формат — как в списке покупок.
 pub(crate) fn pkg_desc(p: &Package) -> String {
     let eff = p.effective_expiry();
-    format!(
-        "срок {}",
-        fmt_date_display(eff, p.month_only && eff == p.expiry)
+    fmt(
+        Str::PkgDesc,
+        &[&fmt_date_display(eff, p.month_only && eff == p.expiry)],
     )
 }
 
@@ -152,9 +152,7 @@ pub(crate) fn reset_pkg_form(ui: &AppWindow, st: &mut UiState) {
     ui.set_pkg_price(SharedString::new());
     ui.set_pkg_period(SharedString::new());
     ui.set_pkg_purchase_date(SharedString::new());
-    ui.set_pkg_validation(SharedString::from(
-        "Формат: ГГГГ-ММ-ДД, ДД.ММ.ГГГГ или ММ.ГГГГ (годен до конца месяца)",
-    ));
+    ui.set_pkg_validation(SharedString::from(tr(Str::FmtHint)));
     ui.set_pkg_validation_color(color_grey());
     ui.set_pkg_save_enabled(false);
 }
@@ -167,7 +165,8 @@ pub(crate) fn validate_pkg_form(ui: &AppWindow, st: &UiState) {
         ui.get_pkg_price().as_str(),
     ) {
         Err(msg) => {
-            let neutral = msg.starts_with("Формат:");
+            // нейтральную подсказку («Формат: …») не подсвечиваем красным
+            let neutral = msg == tr(Str::FmtHint);
             ui.set_pkg_validation(SharedString::from(msg));
             ui.set_pkg_validation_color(if neutral { color_grey() } else { color_red() });
             ui.set_pkg_save_enabled(false);
@@ -176,9 +175,7 @@ pub(crate) fn validate_pkg_form(ui: &AppWindow, st: &UiState) {
             // дата покупки необязательна, но заполненная должна читаться
             let purchased = ui.get_pkg_purchase_date().trim().to_string();
             if !purchased.is_empty() && parse_date_input(&purchased).is_none() {
-                ui.set_pkg_validation(SharedString::from(
-                    "Дата покупки: ГГГГ-ММ-ДД или ДД.ММ.ГГГГ (можно оставить пустым)",
-                ));
+                ui.set_pkg_validation(SharedString::from(tr(Str::BuyDateError)));
                 ui.set_pkg_validation_color(color_red());
                 ui.set_pkg_save_enabled(false);
                 return;
@@ -186,16 +183,15 @@ pub(crate) fn validate_pkg_form(ui: &AppWindow, st: &UiState) {
             let days = days_left(input.expiry, today());
             let s = status_for(days, st.domain.db.warn_days as i64);
             let mut msg = if input.month_only {
-                format!(
-                    "месяц: годен до {} · {}",
-                    fmt_date(input.expiry),
-                    status_text(s, days)
+                fmt(
+                    Str::MonthValidation,
+                    &[&fmt_date(input.expiry), &status_text(s, days)],
                 )
             } else {
                 status_text(s, days)
             };
             if input.open_period_days.is_some() {
-                msg.push_str(" · период применится после вскрытия");
+                msg.push_str(tr(Str::PeriodApplies));
             }
             ui.set_pkg_validation(SharedString::from(msg));
             ui.set_pkg_validation_color(match s {
@@ -376,9 +372,9 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
         }
         if let Some((name, pdesc)) = &journal_note {
             let kind = if edit_id >= 0 {
-                "изменена упаковка"
+                canonical(Str::JrnPkgChanged)
             } else {
-                "добавлена упаковка"
+                canonical(Str::JrnPkgAdded)
             };
             st.domain.db.journal_push(kind, name, pdesc);
         }
@@ -386,18 +382,12 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
         if journal_note.is_some() {
             commit_refresh_persist(&ui, &mut st, prev, false);
         } else {
-            set_status_info(&ui, "Изменений нет — упаковка осталась прежней".to_string());
+            set_status_info(&ui, tr(Str::NoPkgChanges).to_string());
         }
         if let Some(e) = photo_error {
             // упаковка сохранена, но фото не прикрепилось — честно сообщаем
             // и говорим, как прикрепить позже
-            report_error(
-                &ui,
-                format!(
-                    "Упаковка сохранена, но {e}. Прикрепить фото позже: \
-                     кнопка «Изменить» → «Фото…»"
-                ),
-            );
+            report_error(&ui, fmt(Str::PkgSavedPhotoFailed, &[&e]));
         }
     });
 
@@ -412,7 +402,9 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
             m.packages.retain(|p| p.id != pid);
         }
         if let Some((n, d)) = &jnote {
-            st.domain.db.journal_push("упаковка удалена", n, d);
+            st.domain
+                .db
+                .journal_push(canonical(Str::JrnPkgDeleted), n, d);
         }
         // удалили упаковку, которая была в редактировании, — форма возвращается
         // в режим «новая упаковка»: иначе кнопка «Сохранить» создала бы дубль
@@ -424,23 +416,17 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
         if let Some((n, d)) = jnote {
             // подтверждение с путём возврата: удаление двухшаговое, но факт
             // и способ отката стоит назвать словами
-            set_status_info(&ui, format!("Удалено: {n} ({d}) — вернуть: Ctrl+Z"));
+            set_status_info(&ui, fmt(Str::PkgDeleted, &[&n, &d]));
         }
     });
 
     with_state!(ui, state, on_export_csv, |ui, st| {
         match csv::export_csv(&st.domain.db) {
-            Ok(exported) => ui.set_status_message(SharedString::from(format!(
-                "Экспортировано: {}",
-                exported.display()
+            Ok(exported) => ui.set_status_message(SharedString::from(fmt(
+                Str::Exported,
+                &[&exported.display().to_string()],
             ))),
-            Err(e) => report_error(
-                &ui,
-                format!(
-                    "Ошибка экспорта: {e}. Проверьте, что файл не открыт в Excel, \
-                     и что папка программы доступна для записи"
-                ),
-            ),
+            Err(e) => report_error(&ui, fmt(Str::ExportError, &[&e.to_string()])),
         }
     });
 
@@ -460,19 +446,18 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
                 let eff = p.effective_expiry();
                 jnote = Some((
                     m.name.clone(),
-                    format!("{} · годен до {}", pkg_desc(p), fmt_date(eff)),
+                    fmt(Str::PkgDescExpires, &[&pkg_desc(p), &fmt_date(eff)]),
                 ));
             }
         }
         if let Some((n, d)) = jnote {
-            st.domain.db.journal_push("упаковка открыта", &n, &d);
+            st.domain
+                .db
+                .journal_push(canonical(Str::JrnPkgOpened), &n, &d);
             commit_refresh_persist(&ui, &mut st, prev, false);
             // обратной кнопки «не открыта» нет (кнопки карточки и так на пределе
             // ширины окна) — rollback через Ctrl+Z, говорим о нём сразу
-            set_status_info(
-                &ui,
-                "Упаковка отмечена открытой сегодня — отменить: Ctrl+Z".to_string(),
-            );
+            set_status_info(&ui, tr(Str::PkgOpened).to_string());
         }
     });
 
@@ -497,7 +482,9 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
             }
         }
         if let Some((n, d)) = jnote {
-            st.domain.db.journal_push("упаковка списана", &n, &d);
+            st.domain
+                .db
+                .journal_push(canonical(Str::JrnPkgDisposed), &n, &d);
             commit_refresh_persist(&ui, &mut st, prev, false);
         }
     });
@@ -519,7 +506,7 @@ pub(crate) fn register_package_cbs(ui: &AppWindow, state: &Rc<RefCell<UiState>>)
         if let Some((n, d)) = jnote {
             st.domain
                 .db
-                .journal_push("упаковка возвращена в работу", &n, &d);
+                .journal_push(canonical(Str::JrnPkgRestored), &n, &d);
             commit_refresh_persist(&ui, &mut st, prev, false);
         }
     });

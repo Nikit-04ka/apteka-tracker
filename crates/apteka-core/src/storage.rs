@@ -237,9 +237,9 @@ fn load_outcome_stamped(path: &Path, stamp: String) -> LoadOutcome {
                     msg,
                 }
             } else {
-                LoadOutcome::Io(format!(
-                    "файл повреждён ({msg}) и его не удалось сохранить как {} — данные НЕ тронуты",
-                    backup.display()
+                LoadOutcome::Io(crate::i18n::fmt(
+                    crate::i18n::Str::CorruptQuarantineFailed,
+                    &[&msg, &backup.display().to_string()],
                 ))
             }
         }
@@ -250,7 +250,10 @@ fn load_outcome_stamped(path: &Path, stamp: String) -> LoadOutcome {
 /// повреждённый файл здесь не переименовывается и не копируется.
 pub fn load_database_from(path: &Path) -> Result<Database, String> {
     if !path.exists() {
-        return Err(format!("Файл не найден: {}", path.display()));
+        return Err(crate::i18n::fmt(
+            crate::i18n::Str::FileNotFound,
+            &[&path.display().to_string()],
+        ));
     }
     let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
     match serde_json::from_str::<Database>(&text) {
@@ -258,7 +261,10 @@ pub fn load_database_from(path: &Path) -> Result<Database, String> {
             db.migrate();
             Ok(db)
         }
-        Err(e) => Err(format!("Повреждённый JSON: {e}")),
+        Err(e) => Err(crate::i18n::fmt(
+            crate::i18n::Str::CorruptJson,
+            &[&e.to_string()],
+        )),
     }
 }
 

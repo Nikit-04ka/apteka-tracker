@@ -3,6 +3,7 @@
 
 pub mod csv;
 pub mod history;
+pub mod i18n;
 pub mod input;
 pub mod model;
 pub mod settings;

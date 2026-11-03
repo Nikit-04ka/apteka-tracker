@@ -111,6 +111,115 @@ global StatusTheme {
     }
 }
 
+// ===== Локализация =====
+// Строки UI задаются из Rust (apply_i18n) при старте и при смене языка флажком.
+// Дефолты — русский (исходный язык приложения). Динамические строки (сводка,
+// статусы, заголовки) Rust пересобирает отдельно — refresh_all после смены языка.
+export global I18n {
+    // шрифт интерфейса: для CJK нужен конкретный шрифт — системный фолбэк
+    // может подобрать японский шрифт без упрощённых иероглифов
+    in-out property <string> font-family: "Segoe UI";
+    // общие
+    in-out property <string> t-app-title: "Домашняя аптечка — учёт сроков годности";
+    in-out property <string> t-close: "Закрыть";
+    in-out property <string> t-cancel: "Отмена";
+    in-out property <string> t-lang-label: "Язык:";
+    // тулбар и список
+    in-out property <string> t-app-header: "Аптечка";
+    in-out property <string> t-search-placeholder: "Поиск: название, форма, заметки, категория…";
+    in-out property <[string]> filter-options: ["Все лекарства", "Истекают скоро", "Просроченные"];
+    in-out property <[string]> sort-options: ["По ближайшему сроку", "По названию"];
+    in-out property <string> t-add-medicine: "+ Добавить лекарство";
+    in-out property <string> t-list-header: "Лекарства · ";
+    in-out property <string> t-all-categories: "Все категории";
+    in-out property <string> t-list-empty: "Аптечка пуста.\nНажмите «+ Добавить лекарство».";
+    in-out property <string> t-list-no-results: "Ничего не найдено.\nИзмените поиск или фильтр.";
+    // детали лекарства
+    in-out property <string> t-detail-pick-hint: "Выберите лекарство в списке\nили нажмите «+ Добавить лекарство»";
+    in-out property <string> t-detail-hidden: "Это лекарство скрыто текущим поиском или фильтром — в списке слева его не видно";
+    in-out property <string> t-field-name: "Название";
+    in-out property <string> t-field-form: "Форма";
+    in-out property <string> t-field-actions: "Действия";
+    in-out property <string> t-field-notes: "Заметки";
+    in-out property <string> t-field-tags: "Категории (через запятую) — попадают в поиск";
+    in-out property <string> t-tags-placeholder: "напр. жаропонижающее, детское";
+    in-out property <string> t-delete-medicine: "Удалить лекарство";
+    in-out property <string> t-delete-confirm: "Точно удалить?";
+    in-out property <string> t-packages-header: "Упаковки";
+    in-out property <string> t-packages-hint: "у одного лекарства может быть несколько упаковок с разными сроками";
+    in-out property <string> t-show-disposed: "Показать списанные";
+    in-out property <string> t-hide-disposed: "Скрыть списанные";
+    in-out property <string> t-packages-empty: "Упаковок пока нет.";
+    // карточка упаковки
+    in-out property <string> t-photo-missing: "фото\nнедоступно.\nКлик —\nзаменить";
+    in-out property <string> t-pkg-open: "Открыть";
+    in-out property <string> t-pkg-open-confirm: "Точно открыть?";
+    in-out property <string> t-pkg-used: "Израсходовано";
+    in-out property <string> t-pkg-discard: "Выбросить";
+    in-out property <string> t-pkg-clone: "Клонировать";
+    in-out property <string> t-pkg-edit: "Изменить";
+    in-out property <string> t-pkg-restore: "Вернуть";
+    in-out property <string> t-pkg-delete: "Удалить";
+    in-out property <string> t-pkg-delete-forever: "Удалить навсегда";
+    // форма упаковки
+    in-out property <string> t-form-new: "Новая упаковка";
+    in-out property <string> t-form-new-photo: "Новая упаковка · фото прикрепится при сохранении";
+    in-out property <string> t-form-edit: "Изменение упаковки";
+    in-out property <string> t-field-expiry: "Срок годности";
+    in-out property <string> t-field-quantity: "Количество";
+    in-out property <string> t-field-price: "Цена, руб.";
+    in-out property <string> t-field-period: "После вскрытия, дн.";
+    in-out property <string> t-field-purchased: "Куплена";
+    in-out property <string> t-field-comment: "Комментарий";
+    in-out property <string> t-expiry-placeholder: "ГГГГ-ММ-ДД, ДД.ММ.ГГГГ или ММ.ГГГГ";
+    in-out property <string> t-quantity-placeholder: "напр. 2 уп.";
+    in-out property <string> t-price-placeholder: "напр. 350";
+    in-out property <string> t-period-placeholder: "напр. 30";
+    in-out property <string> t-optional-placeholder: "необязательно";
+    in-out property <string> t-quick-label: "Быстро:";
+    in-out property <string> t-quick-6m: "+6 мес.";
+    in-out property <string> t-quick-1y: "+1 год";
+    in-out property <string> t-quick-2y: "+2 года";
+    in-out property <string> t-photo-btn: "Фото…";
+    in-out property <string> t-save-pkg: "Сохранить упаковку";
+    in-out property <string> t-add-pkg: "Добавить упаковку";
+    // календарь
+    in-out property <[string]> week-days: ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"];
+    // статусная строка
+    in-out property <string> t-warn-prefix: "«Истекает», если осталось ≤";
+    in-out property <string> t-warn-suffix: "дн.";
+    in-out property <string> t-undo: "Отменить";
+    in-out property <string> t-redo: "Вернуть";
+    in-out property <string> t-journal: "Журнал";
+    in-out property <string> t-shopping: "Что купить";
+    in-out property <string> t-reports: "Отчёты";
+    in-out property <string> t-backups: "Бэкапы";
+    in-out property <string> t-import-csv: "Импорт CSV";
+    in-out property <string> t-export-csv: "Экспорт CSV";
+    in-out property <string> t-theme: "Тема";
+    // сводка (стартовые значения — дальше пересобирает Rust)
+    in-out property <string> t-summary-total: "Лекарств: 0 · Упаковок: 0";
+    in-out property <string> t-summary-soon: "Истекают: 0";
+    in-out property <string> t-summary-expired: "Просрочено: 0";
+    in-out property <string> t-summary-cost: "Стоимость: 0 руб.";
+    // вторичные окна
+    in-out property <string> t-reports-title: "Отчёты";
+    in-out property <string> t-rep-empty: "Данных пока нет — отметьте даты покупки и списывайте упаковки кнопкой «Выбросить».";
+    in-out property <string> t-journal-title: "Журнал событий";
+    in-out property <string> t-jrn-empty: "Журнал пуст — события появятся по мере работы.";
+    in-out property <string> t-shopping-title: "Что купить";
+    in-out property <string> t-shop-empty: "Покупать нечего — все сроки в порядке.";
+    in-out property <string> t-shop-copy: "Скопировать";
+    in-out property <string> t-backups-title: "Резервные копии";
+    in-out property <string> t-bak-hint: "Выберите копию и нажмите «Восстановить». Текущие данные перед этим будут сохранены в новый бэкап (и их можно вернуть через Ctrl+Z).";
+    in-out property <string> t-bak-empty: "Бэкапов пока нет — они создаются автоматически при каждом запуске программы.";
+    in-out property <string> t-bak-restore: "Восстановить";
+    in-out property <string> t-imp-title: "Импорт CSV";
+    in-out property <string> t-imp-hint: "Импорт понимает файлы экспорта этой программы (разделитель «;»). Выберите CSV-файл рядом с программой. Данные добавятся к существующим; лекарства с такой парой «название + форма» пропускаются, поэтому повторный импорт не создаёт дублей. Жизненный цикл упаковок (вскрытие, период после вскрытия, списание) переносится; фото не переносятся.";
+    in-out property <string> t-imp-empty: "CSV-файлы рядом с программой не найдены. Сделайте экспорт на другом компьютере и скопируйте файл сюда.";
+    in-out property <string> t-imp-import: "Импортировать";
+}
+
 // Точка-индикатор статуса
 component StatusDot inherits Rectangle {
     in property <int> status: 0;
@@ -149,6 +258,34 @@ component Badge inherits Rectangle {
             color: StatusTheme.text(root.status);
             vertical-alignment: center;
         }
+    }
+}
+
+// Флажок-кнопка выбора языка: картинка из assets/flags/<код>.png, активный
+// язык обведён акцентом. Языки заданы константами в Rust (apply_i18n).
+component FlagButton inherits Rectangle {
+    in property <image> flag;
+    in property <bool> active: false;
+    in property <string> tip;
+    callback clicked;
+    width: 30px;
+    height: 24px;
+    border-radius: 5px;
+    border-width: root.active ? 2px : 1px;
+    border-color: root.active ? Theme.accent : Theme.hairline;
+    background: fta.has-hover ? Theme.accent-tint-soft : Theme.panel;
+    animate border-color { duration: 90ms; easing: ease-out; }
+    fta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+    Image {
+        source: root.flag;
+        x: 3px;
+        y: 3px;
+        width: parent.width - 6px;
+        height: parent.height - 6px;
+        image-fit: fill; // флаги скачаны в пропорции 4:3, кнопка тоже 4:3
     }
 }
 
@@ -324,7 +461,8 @@ component MedRow inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
-    title: "Домашняя аптечка — учёт сроков годности";
+    title: I18n.t-app-title;
+    default-font-family: I18n.font-family;
     icon: @image-url("../assets/icon.png");
     // preferred — начальный размер окна, min — предел уменьшения при ресайзе.
     // Не задавай здесь width/height: они фиксируют размер и запрещают ресайз.
@@ -340,15 +478,19 @@ export component AppWindow inherits Window {
     in-out property <[PackageRow]> packages;
     in-out property <int> selected-id: -1;
     in-out property <bool> has-selection: false;
-    in-out property <string> packages-header: "Упаковки";
-    in-out property <string> list-empty-text: "Аптечка пуста.";
+    in-out property <string> packages-header: I18n.t-packages-header;
+    in-out property <string> list-empty-text: I18n.t-list-empty;
+
+    // ===== Язык интерфейса (флажки в строке сводки) =====
+    in-out property <string> lang-code: "ru";
+    callback lang-selected(string);
 
     // ===== Тулбар =====
     in-out property <string> search-text: "";
     in-out property <int> filter-index: 0;
     in-out property <int> sort-index: 0;
     // Категория-фильтр: модель заполняется из Rust («Все категории» + теги)
-    in-out property <[string]> tag-options: ["Все категории"];
+    in-out property <[string]> tag-options: [I18n.t-all-categories];
     in-out property <int> tag-filter-index: 0;
 
     // ===== Детали лекарства =====
@@ -357,16 +499,16 @@ export component AppWindow inherits Window {
     in-out property <string> detail-note: "";
     in-out property <string> detail-tags: "";
     in-out property <[string]> form-options;
-    in-out property <string> delete-btn-text: "Удалить лекарство";
+    in-out property <string> delete-btn-text: I18n.t-delete-medicine;
     in-out property <bool> delete-armed: false;
     // Выбранное лекарство не попало в видимый список (поиск/фильтр) —
     // предупреждение в панели деталей, чтобы не править «невидимое» лекарство
     in-out property <bool> selected-hidden: false;
 
     // ===== Сводка =====
-    in-out property <string> summary-total: "Лекарств: 0 · Упаковок: 0";
-    in-out property <string> summary-soon: "Истекают: 0";
-    in-out property <string> summary-expired: "Просрочено: 0";
+    in-out property <string> summary-total: I18n.t-summary-total;
+    in-out property <string> summary-soon: I18n.t-summary-soon;
+    in-out property <string> summary-expired: I18n.t-summary-expired;
 
     // ===== Форма упаковки =====
     in-out property <string> pkg-expiry: "";
@@ -439,11 +581,11 @@ export component AppWindow inherits Window {
 
     // Жизненный цикл упаковок
     in-out property <bool> show-disposed: false;
-    in-out property <string> summary-cost: "Стоимость: 0 руб.";
+    in-out property <string> summary-cost: I18n.t-summary-cost;
     in-out property <string> pkg-price: "";
     in-out property <string> pkg-period: "";
     in-out property <string> pkg-purchase-date: "";
-    in-out property <string> packages-empty-text: "Упаковок пока нет.";
+    in-out property <string> packages-empty-text: I18n.t-packages-empty;
     in-out property <bool> pending-photo: false;
     // Двухшаговое подтверждение опасных действий над упаковкой: id упаковки,
     // для которой взведено «Точно …?» (-1 — ничего не взведено). Открытие и
@@ -490,7 +632,7 @@ export component AppWindow inherits Window {
             } else if (event.text == Key.Delete && root.has-selection) {
                 if (!root.delete-armed) {
                     root.delete-armed = true;
-                    root.delete-btn-text = "Точно удалить?";
+                    root.delete-btn-text = I18n.t-delete-confirm;
                     root.delete-arm-hint();
                 } else {
                     root.delete-medicine();
@@ -505,7 +647,7 @@ export component AppWindow inherits Window {
                 }
                 if (root.delete-armed) {
                     root.delete-armed = false;
-                    root.delete-btn-text = "Удалить лекарство";
+                    root.delete-btn-text = I18n.t-delete-medicine;
                 }
                 root.pkg-open-armed = -1;
                 root.pkg-delete-armed = -1;
@@ -526,7 +668,7 @@ export component AppWindow inherits Window {
             vertical-stretch: 0;
 
             Text {
-                text: "Аптечка";
+                text: I18n.t-app-header;
                 font-size: 20px;
                 font-weight: 800;
                 vertical-alignment: center;
@@ -535,14 +677,14 @@ export component AppWindow inherits Window {
             Rectangle { width: 6px; }
             search-input := LineEdit {
                 text <=> root.search-text;
-                placeholder-text: "Поиск: название, форма, заметки, категория…";
+                placeholder-text: I18n.t-search-placeholder;
                 horizontal-stretch: 1;
                 vertical-stretch: 0;
                 edited(text) => { root.search-edited(text); }
             }
             ComboBox {
                 width: 175px;
-                model: ["Все лекарства", "Истекают скоро", "Просроченные"];
+                model: I18n.filter-options;
                 current-index <=> root.filter-index;
                 selected(value) => { root.filter-selected(root.filter-index); }
             }
@@ -554,12 +696,12 @@ export component AppWindow inherits Window {
             }
             ComboBox {
                 width: 195px;
-                model: ["По ближайшему сроку", "По названию"];
+                model: I18n.sort-options;
                 current-index <=> root.sort-index;
                 selected(value) => { root.sort-selected(root.sort-index); }
             }
             AccentButton {
-                label: "+ Добавить лекарство";
+                label: I18n.t-add-medicine;
                 clicked => { root.add-medicine(); }
             }
         }
@@ -592,6 +734,64 @@ export component AppWindow inherits Window {
                 label-c: Theme.text;
                 bg-c: Theme.accent-tint-soft;
             }
+            Rectangle { horizontal-stretch: 1; }
+            // ===== Выбор языка: флажки стран (10 языков, порядок — Lang::ALL) =====
+            Text {
+                text: I18n.t-lang-label;
+                font-size: 12px;
+                vertical-alignment: center;
+                color: Theme.muted;
+            }
+            FlagButton {
+                flag: @image-url("../assets/flags/en.png");
+                active: root.lang-code == "en";
+                clicked => { root.lang-selected("en"); }
+            }
+            FlagButton {
+                flag: @image-url("../assets/flags/de.png");
+                active: root.lang-code == "de";
+                clicked => { root.lang-selected("de"); }
+            }
+            FlagButton {
+                flag: @image-url("../assets/flags/es.png");
+                active: root.lang-code == "es";
+                clicked => { root.lang-selected("es"); }
+            }
+            FlagButton {
+                flag: @image-url("../assets/flags/fr.png");
+                active: root.lang-code == "fr";
+                clicked => { root.lang-selected("fr"); }
+            }
+            FlagButton {
+                flag: @image-url("../assets/flags/it.png");
+                active: root.lang-code == "it";
+                clicked => { root.lang-selected("it"); }
+            }
+            FlagButton {
+                flag: @image-url("../assets/flags/pt.png");
+                active: root.lang-code == "pt";
+                clicked => { root.lang-selected("pt"); }
+            }
+            FlagButton {
+                flag: @image-url("../assets/flags/ru.png");
+                active: root.lang-code == "ru";
+                clicked => { root.lang-selected("ru"); }
+            }
+            FlagButton {
+                flag: @image-url("../assets/flags/zh.png");
+                active: root.lang-code == "zh";
+                clicked => { root.lang-selected("zh"); }
+            }
+            FlagButton {
+                flag: @image-url("../assets/flags/ja.png");
+                active: root.lang-code == "ja";
+                clicked => { root.lang-selected("ja"); }
+            }
+            FlagButton {
+                flag: @image-url("../assets/flags/ar.png");
+                active: root.lang-code == "ar";
+                clicked => { root.lang-selected("ar"); }
+            }
         }
 
         // ===== Основная область: список + детали =====
@@ -619,7 +819,7 @@ export component AppWindow inherits Window {
                     spacing: 2px;
 
                     Text {
-                        text: "Лекарства · \{root.medicines.length}";
+                        text: "\{I18n.t-list-header}\{root.medicines.length}";
                         font-size: 11px;
                         font-weight: 700;
                         color: Theme.muted;
@@ -699,7 +899,7 @@ export component AppWindow inherits Window {
                 if (!root.has-selection): Text {
                     width: 100%;
                     height: 100%;
-                    text: "Выберите лекарство в списке\nили нажмите «+ Добавить лекарство»";
+                    text: I18n.t-detail-pick-hint;
                     horizontal-alignment: center;
                     vertical-alignment: center;
                     wrap: word-wrap;
@@ -711,7 +911,7 @@ export component AppWindow inherits Window {
                     spacing: 10px;
 
                     if (root.selected-hidden): Text {
-                        text: "Это лекарство скрыто текущим поиском или фильтром — в списке слева его не видно";
+                        text: I18n.t-detail-hidden;
                         font-size: 11px;
                         wrap: word-wrap;
                         color: Theme.warn-text;
@@ -719,7 +919,7 @@ export component AppWindow inherits Window {
 
                     VerticalLayout {
                         spacing: 3px;
-                        FieldLabel { text: "Название"; }
+                        FieldLabel { text: I18n.t-field-name; }
                         name-edit := LineEdit {
                             text <=> root.detail-name;
                             font-size: 16px;
@@ -734,7 +934,7 @@ export component AppWindow inherits Window {
                         VerticalLayout {
                             spacing: 3px;
                             width: 190px;
-                            FieldLabel { text: "Форма"; }
+                            FieldLabel { text: I18n.t-field-form; }
                             ComboBox {
                                 model: root.form-options;
                                 current-index <=> root.detail-form-index;
@@ -746,14 +946,14 @@ export component AppWindow inherits Window {
                             spacing: 3px;
                             width: 190px;
                             alignment: end;
-                            FieldLabel { text: "Действия"; }
+                            FieldLabel { text: I18n.t-field-actions; }
                             GhostButton {
                                 label: root.delete-btn-text;
                                 danger: true;
                                 clicked => {
                                     if (!root.delete-armed) {
                                         root.delete-armed = true;
-                                        root.delete-btn-text = "Точно удалить?";
+                                        root.delete-btn-text = I18n.t-delete-confirm;
                                         root.delete-arm-hint();
                                     } else {
                                         root.delete-medicine();
@@ -765,7 +965,7 @@ export component AppWindow inherits Window {
 
                     VerticalLayout {
                         spacing: 3px;
-                        FieldLabel { text: "Заметки"; }
+                        FieldLabel { text: I18n.t-field-notes; }
                         TextEdit {
                             height: 44px;
                             vertical-stretch: 0;
@@ -776,10 +976,10 @@ export component AppWindow inherits Window {
 
                     VerticalLayout {
                         spacing: 3px;
-                        FieldLabel { text: "Категории (через запятую) — попадают в поиск"; }
+                        FieldLabel { text: I18n.t-field-tags; }
                         LineEdit {
                             text <=> root.detail-tags;
-                            placeholder-text: "напр. жаропонижающее, детское";
+                            placeholder-text: I18n.t-tags-placeholder;
                             edited(text) => { root.tags-edited(text); }
                         }
                     }
@@ -794,7 +994,7 @@ export component AppWindow inherits Window {
                             color: Theme.text;
                         }
                         Text {
-                            text: "у одного лекарства может быть несколько упаковок с разными сроками";
+                            text: I18n.t-packages-hint;
                             font-size: 11px;
                             vertical-alignment: center;
                             overflow: elide;
@@ -802,7 +1002,7 @@ export component AppWindow inherits Window {
                         }
                         Rectangle { horizontal-stretch: 1; }
                         GhostButton {
-                            label: root.show-disposed ? "Скрыть списанные" : "Показать списанные";
+                            label: root.show-disposed ? I18n.t-hide-disposed : I18n.t-show-disposed;
                             clicked => { root.toggle-show-disposed(); }
                         }
                     }
@@ -873,7 +1073,7 @@ export component AppWindow inherits Window {
                                                 }
                                                 Text {
                                                     width: 100%;
-                                                    text: "фото\nнедоступно.\nКлик —\nзаменить";
+                                                    text: I18n.t-photo-missing;
                                                     font-size: 8px;
                                                     color: Theme.muted;
                                                     horizontal-alignment: center;
@@ -938,7 +1138,7 @@ export component AppWindow inherits Window {
                                                         // упаковку вскрытой «навсегда»
                                                         // (кнопки «не открыт» в UI нет) —
                                                         // поэтому двухшагово
-                                                        label: root.pkg-open-armed == p.id ? "Точно открыть?" : "Открыть";
+                                                        label: root.pkg-open-armed == p.id ? I18n.t-pkg-open-confirm : I18n.t-pkg-open;
                                                         clicked => {
                                                             if (root.pkg-open-armed == p.id) {
                                                                 root.pkg-open-armed = -1;
@@ -950,34 +1150,34 @@ export component AppWindow inherits Window {
                                                         }
                                                     }
                                                     if (!p.disposed && p.opened): GhostButton {
-                                                        label: "Израсходовано";
+                                                        label: I18n.t-pkg-used;
                                                         clicked => { root.pkg-dispose(p.id, 0); }
                                                     }
                                                     // выбросить можно и запечатанную
                                                     // (например, просроченную) пачку
                                                     if (!p.disposed): GhostButton {
-                                                        label: "Выбросить";
+                                                        label: I18n.t-pkg-discard;
                                                         danger: true;
                                                         clicked => { root.pkg-dispose(p.id, 1); }
                                                     }
                                                     if (!p.disposed): GhostButton {
-                                                        label: "Клонировать";
+                                                        label: I18n.t-pkg-clone;
                                                         clicked => { root.pkg-clone(p.id); }
                                                     }
                                                     if (!p.disposed): GhostButton {
-                                                        label: "Изменить";
+                                                        label: I18n.t-pkg-edit;
                                                         clicked => { root.pkg-start-edit(p.id); }
                                                     }
                                                     if (p.disposed): GhostButton {
-                                                        label: "Вернуть";
+                                                        label: I18n.t-pkg-restore;
                                                         clicked => { root.pkg-restore(p.id); }
                                                     }
                                                     GhostButton {
                                                         // удаление — как у лекарства:
                                                         // два нажатия, между ними
                                                         // кнопка меняет текст
-                                                        label: root.pkg-delete-armed == p.id ? "Точно удалить?"
-                                                            : p.disposed ? "Удалить навсегда" : "Удалить";
+                                                        label: root.pkg-delete-armed == p.id ? I18n.t-delete-confirm
+                                                            : p.disposed ? I18n.t-pkg-delete-forever : I18n.t-pkg-delete;
                                                         danger: true;
                                                         clicked => {
                                                             if (root.pkg-delete-armed == p.id) {
@@ -1026,9 +1226,9 @@ export component AppWindow inherits Window {
                             spacing: 8px;
 
                             Text {
-                                text: root.pkg-editing ? "Изменение упаковки"
-                                    : root.pending-photo ? "Новая упаковка · фото прикрепится при сохранении"
-                                    : "Новая упаковка";
+                                text: root.pkg-editing ? I18n.t-form-edit
+                                    : root.pending-photo ? I18n.t-form-new-photo
+                                    : I18n.t-form-new;
                                 font-size: 13px;
                                 font-weight: 700;
                                 color: root.pkg-editing ? Theme.accent : Theme.text;
@@ -1041,13 +1241,13 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     spacing: 3px;
                                     horizontal-stretch: 2;
-                                    FieldLabel { text: "Срок годности"; }
+                                    FieldLabel { text: I18n.t-field-expiry; }
                                     HorizontalLayout {
                                         spacing: 4px;
                                         expiry-edit := LineEdit {
                                             horizontal-stretch: 1;
                                             text <=> root.pkg-expiry;
-                                            placeholder-text: "ГГГГ-ММ-ДД, ДД.ММ.ГГГГ или ММ.ГГГГ";
+                                            placeholder-text: I18n.t-expiry-placeholder;
                                             edited(text) => { root.pkg-expiry-edited(text); }
                                         }
                                         GhostButton {
@@ -1095,13 +1295,13 @@ export component AppWindow inherits Window {
                                                 }
                                                 HorizontalLayout {
                                                     spacing: 0;
-                                                    Text { width: 34px; text: "Пн"; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
-                                                    Text { width: 34px; text: "Вт"; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
-                                                    Text { width: 34px; text: "Ср"; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
-                                                    Text { width: 34px; text: "Чт"; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
-                                                    Text { width: 34px; text: "Пт"; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
-                                                    Text { width: 34px; text: "Сб"; font-size: 10px; horizontal-alignment: center; color: Theme.warn-text; }
-                                                    Text { width: 34px; text: "Вс"; font-size: 10px; horizontal-alignment: center; color: Theme.warn-text; }
+                                                    Text { width: 34px; text: I18n.week-days[0]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { width: 34px; text: I18n.week-days[1]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { width: 34px; text: I18n.week-days[2]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { width: 34px; text: I18n.week-days[3]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { width: 34px; text: I18n.week-days[4]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { width: 34px; text: I18n.week-days[5]; font-size: 10px; horizontal-alignment: center; color: Theme.warn-text; }
+                                                    Text { width: 34px; text: I18n.week-days[6]; font-size: 10px; horizontal-alignment: center; color: Theme.warn-text; }
                                                 }
                                                 for row in cal-weeks: HorizontalLayout {
                                                     spacing: 0;
@@ -1139,19 +1339,19 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     spacing: 3px;
                                     horizontal-stretch: 1;
-                                    FieldLabel { text: "Количество"; }
+                                    FieldLabel { text: I18n.t-field-quantity; }
                                     LineEdit {
                                         text <=> root.pkg-quantity;
-                                        placeholder-text: "напр. 2 уп.";
+                                        placeholder-text: I18n.t-quantity-placeholder;
                                     }
                                 }
                                 VerticalLayout {
                                     spacing: 3px;
                                     horizontal-stretch: 1;
-                                    FieldLabel { text: "Цена, руб."; }
+                                    FieldLabel { text: I18n.t-field-price; }
                                     LineEdit {
                                         text <=> root.pkg-price;
-                                        placeholder-text: "напр. 350";
+                                        placeholder-text: I18n.t-price-placeholder;
                                         edited(text) => { root.pkg-form-edited(); }
                                     }
                                 }
@@ -1162,20 +1362,20 @@ export component AppWindow inherits Window {
                                 VerticalLayout {
                                     spacing: 3px;
                                     horizontal-stretch: 1;
-                                    FieldLabel { text: "После вскрытия, дн."; }
+                                    FieldLabel { text: I18n.t-field-period; }
                                     LineEdit {
                                         text <=> root.pkg-period;
-                                        placeholder-text: "напр. 30";
+                                        placeholder-text: I18n.t-period-placeholder;
                                         edited(text) => { root.pkg-form-edited(); }
                                     }
                                 }
                                 VerticalLayout {
                                     spacing: 3px;
                                     horizontal-stretch: 1;
-                                    FieldLabel { text: "Куплена"; }
+                                    FieldLabel { text: I18n.t-field-purchased; }
                                     LineEdit {
                                         text <=> root.pkg-purchase-date;
-                                        placeholder-text: "необязательно";
+                                        placeholder-text: I18n.t-optional-placeholder;
                                         edited(text) => { root.pkg-form-edited(); }
                                     }
                                 }
@@ -1183,10 +1383,10 @@ export component AppWindow inherits Window {
                                     spacing: 3px;
                                     horizontal-stretch: 2;
                                     alignment: end;
-                                    FieldLabel { text: "Комментарий"; }
+                                    FieldLabel { text: I18n.t-field-comment; }
                                     LineEdit {
                                         text <=> root.pkg-note;
-                                        placeholder-text: "необязательно";
+                                        placeholder-text: I18n.t-optional-placeholder;
                                     }
                                 }
                             }
@@ -1201,34 +1401,34 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 spacing: 8px;
                                 GhostButton {
-                                    label: "Фото…";
+                                    label: I18n.t-photo-btn;
                                     clicked => { root.pick-photo(); }
                                 }
                                 Text {
-                                    text: "Быстро:";
+                                    text: I18n.t-quick-label;
                                     font-size: 12px;
                                     vertical-alignment: center;
                                     color: Theme.muted;
                                 }
                                 GhostButton {
-                                    label: "+6 мес.";
+                                    label: I18n.t-quick-6m;
                                     clicked => { root.pkg-quick(6); }
                                 }
                                 GhostButton {
-                                    label: "+1 год";
+                                    label: I18n.t-quick-1y;
                                     clicked => { root.pkg-quick(12); }
                                 }
                                 GhostButton {
-                                    label: "+2 года";
+                                    label: I18n.t-quick-2y;
                                     clicked => { root.pkg-quick(24); }
                                 }
                                 Rectangle { horizontal-stretch: 1; }
                                 if (root.pkg-editing): GhostButton {
-                                    label: "Отмена";
+                                    label: I18n.t-cancel;
                                     clicked => { root.pkg-cancel-edit(); }
                                 }
                                 AccentButton {
-                                    label: root.pkg-editing ? "Сохранить упаковку" : "Добавить упаковку";
+                                    label: root.pkg-editing ? I18n.t-save-pkg : I18n.t-add-pkg;
                                     enabled: root.pkg-save-enabled;
                                     clicked => { root.pkg-save(); }
                                 }
@@ -1301,7 +1501,7 @@ export component AppWindow inherits Window {
             spacing: 8px;
             vertical-stretch: 0;
             Text {
-                text: "«Истекает», если осталось ≤";
+                text: I18n.t-warn-prefix;
                 font-size: 12px;
                 vertical-alignment: center;
                 color: Theme.muted;
@@ -1314,49 +1514,49 @@ export component AppWindow inherits Window {
                 edited(value) => { root.warn-days-changed(value); }
             }
             Text {
-                text: "дн.";
+                text: I18n.t-warn-suffix;
                 font-size: 12px;
                 vertical-alignment: center;
                 color: Theme.muted;
             }
             GhostButton {
-                label: "Отменить";
+                label: I18n.t-undo;
                 enabled: root.can-undo;
                 clicked => { root.undo-history(); }
             }
             GhostButton {
-                label: "Вернуть";
+                label: I18n.t-redo;
                 enabled: root.can-redo;
                 clicked => { root.redo-history(); }
             }
             Rectangle { width: 1px; height: 22px; background: Theme.hairline; }
             GhostButton {
-                label: "Журнал";
+                label: I18n.t-journal;
                 clicked => { root.open-journal(); }
             }
             GhostButton {
-                label: "Что купить";
+                label: I18n.t-shopping;
                 clicked => { root.open-shopping(); }
             }
             GhostButton {
-                label: "Отчёты";
+                label: I18n.t-reports;
                 clicked => { root.open-reports(); }
             }
             GhostButton {
-                label: "Бэкапы";
+                label: I18n.t-backups;
                 clicked => { root.open-backups(); }
             }
             GhostButton {
-                label: "Импорт CSV";
+                label: I18n.t-import-csv;
                 clicked => { root.open-import(); }
             }
             Rectangle { width: 1px; height: 22px; background: Theme.hairline; }
             GhostButton {
-                label: "Экспорт CSV";
+                label: I18n.t-export-csv;
                 clicked => { root.export-csv(); }
             }
             GhostButton {
-                label: "Тема";
+                label: I18n.t-theme;
                 clicked => {
                     root.theme-dark = !root.theme-dark;
                     Palette.color-scheme = root.theme-dark ? ColorScheme.dark : ColorScheme.light;
@@ -1382,7 +1582,8 @@ export component AppWindow inherits Window {
 
 // ===== Окно отчётов: списания и покупки по годам =====
 export component ReportWindow inherits Window {
-    title: "Отчёты";
+    title: I18n.t-reports-title;
+    default-font-family: I18n.font-family;
     min-width: 420px;
     min-height: 320px;
     preferred-width: 560px;
@@ -1435,7 +1636,7 @@ export component ReportWindow inherits Window {
                     width: 100%;
                     y: 40px;
                     horizontal-alignment: center;
-                    text: "Данных пока нет — отметьте даты покупки и списывайте упаковки кнопкой «Выбросить».";
+                    text: I18n.t-rep-empty;
                     font-size: 13px;
                     color: Theme.muted;
                 }
@@ -1445,7 +1646,7 @@ export component ReportWindow inherits Window {
         HorizontalLayout {
             alignment: end;
             Button {
-                text: "Закрыть";
+                text: I18n.t-close;
                 clicked => { root.close-clicked(); }
             }
         }
@@ -1454,7 +1655,8 @@ export component ReportWindow inherits Window {
 
 // ===== Окно журнала событий =====
 export component JournalWindow inherits Window {
-    title: "Журнал событий";
+    title: I18n.t-journal-title;
+    default-font-family: I18n.font-family;
     min-width: 480px;
     min-height: 320px;
     preferred-width: 680px;
@@ -1507,7 +1709,7 @@ export component JournalWindow inherits Window {
                     width: 100%;
                     y: 40px;
                     horizontal-alignment: center;
-                    text: "Журнал пуст — события появятся по мере работы.";
+                    text: I18n.t-jrn-empty;
                     font-size: 13px;
                     color: Theme.muted;
                 }
@@ -1517,7 +1719,7 @@ export component JournalWindow inherits Window {
         HorizontalLayout {
             alignment: end;
             Button {
-                text: "Закрыть";
+                text: I18n.t-close;
                 clicked => { root.close-clicked(); }
             }
         }
@@ -1526,7 +1728,8 @@ export component JournalWindow inherits Window {
 
 // ===== Окно «Что купить» =====
 export component ShoppingWindow inherits Window {
-    title: "Что купить";
+    title: I18n.t-shopping-title;
+    default-font-family: I18n.font-family;
     min-width: 420px;
     min-height: 300px;
     preferred-width: 580px;
@@ -1576,7 +1779,7 @@ export component ShoppingWindow inherits Window {
                     width: 100%;
                     y: 40px;
                     horizontal-alignment: center;
-                    text: "Покупать нечего — все сроки в порядке.";
+                    text: I18n.t-shop-empty;
                     font-size: 13px;
                     color: Theme.muted;
                 }
@@ -1593,11 +1796,11 @@ export component ShoppingWindow inherits Window {
                 color: Theme.muted;
             }
             GhostButton {
-                label: "Скопировать";
+                label: I18n.t-shop-copy;
                 clicked => { root.copy-to-clipboard(); }
             }
             Button {
-                text: "Закрыть";
+                text: I18n.t-close;
                 clicked => { root.close-clicked(); }
             }
         }
@@ -1606,7 +1809,8 @@ export component ShoppingWindow inherits Window {
 
 // ===== Окно резервных копий =====
 export component BackupsWindow inherits Window {
-    title: "Резервные копии";
+    title: I18n.t-backups-title;
+    default-font-family: I18n.font-family;
     min-width: 480px;
     min-height: 360px;
     preferred-width: 640px;
@@ -1624,7 +1828,7 @@ export component BackupsWindow inherits Window {
         spacing: 8px;
 
         Text {
-            text: "Выберите копию и нажмите «Восстановить». Текущие данные перед этим будут сохранены в новый бэкап (и их можно вернуть через Ctrl+Z).";
+            text: I18n.t-bak-hint;
             wrap: word-wrap;
             font-size: 12px;
             color: Theme.muted;
@@ -1676,7 +1880,7 @@ export component BackupsWindow inherits Window {
                     y: 32px;
                     wrap: word-wrap;
                     horizontal-alignment: center;
-                    text: "Бэкапов пока нет — они создаются автоматически при каждом запуске программы.";
+                    text: I18n.t-bak-empty;
                     font-size: 13px;
                     color: Theme.muted;
                 }
@@ -1694,12 +1898,12 @@ export component BackupsWindow inherits Window {
                 color: Theme.muted;
             }
             GhostButton {
-                label: "Восстановить";
+                label: I18n.t-bak-restore;
                 enabled: root.selected >= 0;
                 clicked => { root.restore(root.selected); }
             }
             Button {
-                text: "Закрыть";
+                text: I18n.t-close;
                 clicked => { root.close-clicked(); }
             }
         }
@@ -1708,7 +1912,8 @@ export component BackupsWindow inherits Window {
 
 // ===== Окно импорта CSV =====
 export component ImportWindow inherits Window {
-    title: "Импорт CSV";
+    title: I18n.t-imp-title;
+    default-font-family: I18n.font-family;
     min-width: 480px;
     min-height: 360px;
     preferred-width: 640px;
@@ -1726,7 +1931,7 @@ export component ImportWindow inherits Window {
         spacing: 8px;
 
         Text {
-            text: "Импорт понимает файлы экспорта этой программы (разделитель «;»). Выберите CSV-файл рядом с программой. Данные добавятся к существующим; лекарства с такой парой «название + форма» пропускаются, поэтому повторный импорт не создаёт дублей. Жизненный цикл упаковок (вскрытие, период после вскрытия, списание) переносится; фото не переносятся.";
+            text: I18n.t-imp-hint;
             wrap: word-wrap;
             font-size: 12px;
             color: Theme.muted;
@@ -1778,7 +1983,7 @@ export component ImportWindow inherits Window {
                     y: 32px;
                     wrap: word-wrap;
                     horizontal-alignment: center;
-                    text: "CSV-файлы рядом с программой не найдены. Сделайте экспорт на другом компьютере и скопируйте файл сюда.";
+                    text: I18n.t-imp-empty;
                     font-size: 13px;
                     color: Theme.muted;
                 }
@@ -1796,12 +2001,12 @@ export component ImportWindow inherits Window {
                 color: Theme.muted;
             }
             GhostButton {
-                label: "Импортировать";
+                label: I18n.t-imp-import;
                 enabled: root.selected >= 0;
                 clicked => { root.do-import(root.selected); }
             }
             Button {
-                text: "Закрыть";
+                text: I18n.t-close;
                 clicked => { root.close-clicked(); }
             }
         }

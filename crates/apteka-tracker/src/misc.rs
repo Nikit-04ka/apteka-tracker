@@ -1,6 +1,7 @@
 // Служебное: цвета, флаги вида, persist, история отмены, настройки окна.
 
 use apteka_core::chrono::{Datelike, Local, NaiveDate};
+use apteka_core::i18n::{fmt, tr, Str};
 use apteka_core::settings::AppSettings;
 use apteka_core::state::EditKind;
 use slint::private_unstable_api::re_exports::ColorScheme;
@@ -36,7 +37,7 @@ pub(crate) fn color_green() -> Color {
 /// списанных не должны перетекать между лекарствами и через шаги истории.
 pub(crate) fn reset_view_flags(ui: &AppWindow) {
     ui.set_delete_armed(false);
-    ui.set_delete_btn_text(SharedString::from("Удалить лекарство"));
+    ui.set_delete_btn_text(SharedString::from(tr(Str::DeleteMedicine)));
     ui.set_pkg_open_armed(-1);
     ui.set_pkg_delete_armed(-1);
     ui.set_show_disposed(false);
@@ -49,7 +50,7 @@ pub(crate) fn reset_view_flags(ui: &AppWindow) {
 /// выполнялось с одного нажатия (F19).
 pub(crate) fn disarm_delete(ui: &AppWindow) {
     ui.set_delete_armed(false);
-    ui.set_delete_btn_text(SharedString::from("Удалить лекарство"));
+    ui.set_delete_btn_text(SharedString::from(tr(Str::DeleteMedicine)));
     ui.set_pkg_open_armed(-1);
     ui.set_pkg_delete_armed(-1);
 }
@@ -95,18 +96,17 @@ pub(crate) fn persist(ui: &AppWindow, st: &UiState) {
         Ok(path) => {
             st.domain.unsaved.set(false);
             ui.set_save_error(false);
-            ui.set_status_message(SharedString::from(format!(
-                "Сохранено {} · {}",
-                Local::now().format("%H:%M:%S"),
-                path.display()
+            ui.set_status_message(SharedString::from(fmt(
+                Str::Saved,
+                &[
+                    &Local::now().format("%H:%M:%S").to_string(),
+                    &path.display().to_string(),
+                ],
             )));
         }
         Err(e) => {
             st.domain.unsaved.set(true);
-            report_error(
-                ui,
-                format!("ОШИБКА сохранения: {e} — проверьте, что диск и папка доступны для записи"),
-            );
+            report_error(ui, fmt(Str::SaveError, &[&e.to_string()]));
         }
     }
 }
@@ -213,10 +213,7 @@ pub(crate) fn history_step(ui: &AppWindow, st: &mut UiState, backwards: bool) {
     persist(ui, st);
     if had_form {
         // отмена сбросила форму — говорим об этом, а не молча теряем ввод
-        set_status_info(
-            ui,
-            "Правка отменена — несохранённая форма упаковки очищена".to_string(),
-        );
+        set_status_info(ui, tr(Str::EditUndoneFormCleared).to_string());
     }
 }
 
@@ -333,8 +330,8 @@ fn run_photo_dialog(ui: &AppWindow, state: &Rc<RefCell<UiState>>, force_pid: Opt
         (st.pkg_edit_id >= 0).then_some(st.pkg_edit_id)
     });
     let Some(file) = rfd::FileDialog::new()
-        .set_title("Выберите фото упаковки")
-        .add_filter("Изображения", &["png", "jpg", "jpeg"])
+        .set_title(tr(Str::PhotoDialogTitle))
+        .add_filter(tr(Str::PhotoFilter), &["png", "jpg", "jpeg"])
         .pick_file()
     else {
         return;
@@ -361,7 +358,7 @@ fn attach_photo(ui: &AppWindow, state: &Rc<RefCell<UiState>>, pid: i32, file: &s
             .selected()
             .is_some_and(|m| m.packages.iter().any(|p| p.id == pid));
         if !found {
-            set_status_info(ui, "Упаковка не найдена — фото не прикреплено".to_string());
+            set_status_info(ui, tr(Str::PhotoPkgNotFound).to_string());
             return;
         }
     }
@@ -395,8 +392,8 @@ fn attach_photo(ui: &AppWindow, state: &Rc<RefCell<UiState>>, pid: i32, file: &s
     rebuild_packages(ui, &st);
     if changed {
         persist(ui, &st);
-        set_status_info(ui, "Фото упаковки обновлено".to_string());
+        set_status_info(ui, tr(Str::PhotoUpdated).to_string());
     } else {
-        set_status_info(ui, "Фото упаковки уже было прикреплено".to_string());
+        set_status_info(ui, tr(Str::PhotoSame).to_string());
     }
 }
