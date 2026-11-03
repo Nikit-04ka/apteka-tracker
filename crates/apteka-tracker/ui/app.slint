@@ -2,7 +2,7 @@
 // Дизайн-система: фирменный бирюзовый акцент (как у иконки), карточки,
 // бейджи статусов, адаптив к тёмной/светлой теме, сдержанные анимации.
 
-import { Button, ComboBox, LineEdit, ListView, SpinBox, TextEdit, Palette } from "std-widgets.slint";
+import { Button, LineEdit, ListView, SpinBox, TextEdit, Palette } from "std-widgets.slint";
 
 // Палитра экспортируется в Rust: применение сохранённой темы при старте.
 export { Palette }
@@ -119,6 +119,18 @@ export global I18n {
     // шрифт интерфейса: для CJK нужен конкретный шрифт — системный фолбэк
     // может подобрать японский шрифт без упрощённых иероглифов
     in-out property <string> font-family: "Segoe UI";
+    // RTL-зеркало: true для языков с письмом справа налево (арабский).
+    // Ряды переворачиваются через layout-order ячеек, текст/ввод — выравниванием.
+    in-out property <bool> rtl: false;
+    // порядок ячейки в ряду: в RTL обратный (достаточно инверсии — относительный
+    // порядок сохраняется и при скрытых `if`-ячейках)
+    public pure function ord(i: int) -> int {
+        return rtl ? -i : i;
+    }
+    // «начальное» выравнивание текста: слева для LTR, справа для RTL
+    public pure function halign-start() -> TextHorizontalAlignment {
+        return rtl ? right : left;
+    }
     // общие
     in-out property <string> t-app-title: "Домашняя аптечка — учёт сроков годности";
     in-out property <string> t-close: "Закрыть";
@@ -242,6 +254,7 @@ component Badge inherits Rectangle {
         padding-right: 9px;
         spacing: 6px;
         VerticalLayout {
+            layout-order: I18n.ord(0);
             width: 6px;
             alignment: center;
             Rectangle {
@@ -252,6 +265,7 @@ component Badge inherits Rectangle {
             }
         }
         Text {
+            layout-order: I18n.ord(1);
             text: root.text;
             font-size: 11px;
             font-weight: 700;
@@ -286,6 +300,106 @@ component FlagButton inherits Rectangle {
         width: parent.width - 6px;
         height: parent.height - 6px;
         image-fit: fill; // флаги скачаны в пропорции 4:3, кнопка тоже 4:3
+    }
+}
+
+// Выпадающий список с RTL-зеркалом: стандартный ComboBox (fluent) не
+// переворачивает ни текст, ни стрелку — поэтому список собран на токенах
+// дизайна приложения. Порядок «текст → стрелка» задаётся через I18n.ord().
+component AppComboBox inherits Rectangle {
+    in property <[string]> model;
+    in property <bool> enabled: true;
+    in-out property <int> current-index: -1;
+    callback selected(int);
+
+    property <string> current-value: root.current-index >= 0 && root.current-index < root.model.length
+        ? root.model[root.current-index] : "";
+    property <int> visible-items: min(root.model.length, 8);
+    min-width: 160px;
+    height: 32px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: Theme.hairline;
+    background: cta.pressed ? Theme.accent-tint
+        : cta.has-hover ? Theme.hover
+        : Theme.card;
+    animate background { duration: 90ms; easing: ease-out; }
+    opacity: root.enabled ? 1.0 : 0.55;
+
+    cta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { popup.show(); }
+    }
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 8px;
+        Text {
+            layout-order: I18n.ord(0);
+            horizontal-stretch: 1;
+            horizontal-alignment: I18n.halign-start();
+            vertical-alignment: center;
+            text: root.current-value;
+            overflow: elide;
+            font-size: 13px;
+            color: Theme.text;
+        }
+        Text {
+            layout-order: I18n.ord(1);
+            width: 12px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            // ▼ (U+25BC) есть в Segoe UI; ▾ (U+25BE) отсутствует и рисуется тофу
+            text: "▼";
+            font-size: 9px;
+            color: Theme.muted;
+        }
+    }
+
+    popup := PopupWindow {
+        x: 0;
+        y: root.height + 2px;
+        width: root.width;
+        height: root.visible-items * 28px + 8px;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            border-radius: 8px;
+            background: Theme.card;
+            border-width: 1px;
+            border-color: Theme.accent;
+            clip: true;
+            ListView {
+                x: 0;
+                y: 0;
+                width: 100%;
+                height: 100%;
+                for item[i] in root.model: Rectangle {
+                    height: 28px;
+                    background: ita.has-hover ? Theme.accent-tint-soft : transparent;
+                    ita := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.current-index = i;
+                            root.selected(i);
+                            popup.close();
+                        }
+                    }
+                    Text {
+                        x: 10px;
+                        width: parent.width - 20px;
+                        height: parent.height;
+                        vertical-alignment: center;
+                        horizontal-alignment: I18n.halign-start();
+                        text: item;
+                        overflow: elide;
+                        font-size: 13px;
+                        color: i == root.current-index ? Theme.accent : Theme.text;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -361,6 +475,7 @@ component GhostButton inherits Rectangle {
 component FieldLabel inherits Text {
     font-size: 11px;
     font-weight: 600;
+    horizontal-alignment: I18n.halign-start();
     color: Theme.muted;
 }
 
@@ -378,6 +493,7 @@ component SummaryChip inherits Rectangle {
         padding-right: 12px;
         spacing: 8px;
         VerticalLayout {
+            layout-order: I18n.ord(0);
             width: 8px;
             alignment: center;
             Rectangle {
@@ -388,6 +504,7 @@ component SummaryChip inherits Rectangle {
             }
         }
         Text {
+            layout-order: I18n.ord(1);
             text: root.label;
             font-size: 12px;
             font-weight: 600;
@@ -433,20 +550,24 @@ component MedRow inherits Rectangle {
         HorizontalLayout {
             spacing: 8px;
             VerticalLayout {
+                layout-order: I18n.ord(0);
                 width: 10px;
                 alignment: center;
                 StatusDot { status: root.data.status; }
             }
             Text {
+                layout-order: I18n.ord(1);
                 text: root.data.name;
                 font-size: 15px;
                 font-weight: 700;
                 overflow: elide;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
+                horizontal-alignment: I18n.halign-start();
                 color: Theme.text;
             }
             Badge {
+                layout-order: I18n.ord(2);
                 status: root.data.status;
                 text: root.data.days-text;
             }
@@ -455,6 +576,7 @@ component MedRow inherits Rectangle {
             text: root.data.subtitle;
             font-size: 12px;
             overflow: elide;
+            horizontal-alignment: I18n.halign-start();
             color: Theme.muted;
         }
     }
@@ -668,39 +790,49 @@ export component AppWindow inherits Window {
             vertical-stretch: 0;
 
             Text {
+                layout-order: I18n.ord(0);
                 text: I18n.t-app-header;
                 font-size: 20px;
                 font-weight: 800;
                 vertical-alignment: center;
                 color: Theme.text;
             }
-            Rectangle { width: 6px; }
+            Rectangle {
+                layout-order: I18n.ord(1);
+                width: 6px;
+            }
             search-input := LineEdit {
+                layout-order: I18n.ord(2);
                 text <=> root.search-text;
                 placeholder-text: I18n.t-search-placeholder;
+                horizontal-alignment: I18n.halign-start();
                 horizontal-stretch: 1;
                 vertical-stretch: 0;
                 edited(text) => { root.search-edited(text); }
             }
-            ComboBox {
+            AppComboBox {
+                layout-order: I18n.ord(3);
                 width: 175px;
                 model: I18n.filter-options;
                 current-index <=> root.filter-index;
-                selected(value) => { root.filter-selected(root.filter-index); }
+                selected(idx) => { root.filter-selected(idx); }
             }
-            ComboBox {
+            AppComboBox {
+                layout-order: I18n.ord(4);
                 width: 165px;
                 model: root.tag-options;
                 current-index <=> root.tag-filter-index;
-                selected(value) => { root.tag-filter-selected(root.tag-filter-index); }
+                selected(idx) => { root.tag-filter-selected(idx); }
             }
-            ComboBox {
+            AppComboBox {
+                layout-order: I18n.ord(5);
                 width: 195px;
                 model: I18n.sort-options;
                 current-index <=> root.sort-index;
-                selected(value) => { root.sort-selected(root.sort-index); }
+                selected(idx) => { root.sort-selected(idx); }
             }
             AccentButton {
+                layout-order: I18n.ord(6);
                 label: I18n.t-add-medicine;
                 clicked => { root.add-medicine(); }
             }
@@ -711,83 +843,101 @@ export component AppWindow inherits Window {
             spacing: 8px;
             vertical-stretch: 0;
             SummaryChip {
+                layout-order: I18n.ord(0);
                 label: root.summary-total;
                 dot-c: Theme.muted;
                 label-c: Theme.muted;
                 bg-c: Theme.panel;
             }
             SummaryChip {
+                layout-order: I18n.ord(1);
                 label: root.summary-soon;
                 dot-c: Theme.warn;
                 label-c: Theme.warn-text;
                 bg-c: Theme.warn-tint;
             }
             SummaryChip {
+                layout-order: I18n.ord(2);
                 label: root.summary-expired;
                 dot-c: Theme.danger;
                 label-c: Theme.danger-text;
                 bg-c: Theme.danger-tint;
             }
             SummaryChip {
+                layout-order: I18n.ord(3);
                 label: root.summary-cost;
                 dot-c: Theme.accent;
                 label-c: Theme.text;
                 bg-c: Theme.accent-tint-soft;
             }
-            Rectangle { horizontal-stretch: 1; }
+            Rectangle {
+                layout-order: I18n.ord(4);
+                horizontal-stretch: 1;
+            }
             // ===== Выбор языка: флажки стран (10 языков, порядок — Lang::ALL) =====
             Text {
+                layout-order: I18n.ord(5);
                 text: I18n.t-lang-label;
                 font-size: 12px;
                 vertical-alignment: center;
                 color: Theme.muted;
             }
             FlagButton {
+                layout-order: I18n.ord(6);
                 flag: @image-url("../assets/flags/en.png");
                 active: root.lang-code == "en";
                 clicked => { root.lang-selected("en"); }
             }
             FlagButton {
+                layout-order: I18n.ord(7);
                 flag: @image-url("../assets/flags/de.png");
                 active: root.lang-code == "de";
                 clicked => { root.lang-selected("de"); }
             }
             FlagButton {
+                layout-order: I18n.ord(8);
                 flag: @image-url("../assets/flags/es.png");
                 active: root.lang-code == "es";
                 clicked => { root.lang-selected("es"); }
             }
             FlagButton {
+                layout-order: I18n.ord(9);
                 flag: @image-url("../assets/flags/fr.png");
                 active: root.lang-code == "fr";
                 clicked => { root.lang-selected("fr"); }
             }
             FlagButton {
+                layout-order: I18n.ord(10);
                 flag: @image-url("../assets/flags/it.png");
                 active: root.lang-code == "it";
                 clicked => { root.lang-selected("it"); }
             }
             FlagButton {
+                layout-order: I18n.ord(11);
                 flag: @image-url("../assets/flags/pt.png");
                 active: root.lang-code == "pt";
                 clicked => { root.lang-selected("pt"); }
             }
             FlagButton {
+                layout-order: I18n.ord(12);
                 flag: @image-url("../assets/flags/ru.png");
                 active: root.lang-code == "ru";
                 clicked => { root.lang-selected("ru"); }
             }
             FlagButton {
+                layout-order: I18n.ord(13);
                 flag: @image-url("../assets/flags/zh.png");
                 active: root.lang-code == "zh";
                 clicked => { root.lang-selected("zh"); }
             }
             FlagButton {
+                layout-order: I18n.ord(14);
                 flag: @image-url("../assets/flags/ja.png");
                 active: root.lang-code == "ja";
                 clicked => { root.lang-selected("ja"); }
             }
             FlagButton {
+                layout-order: I18n.ord(15);
                 flag: @image-url("../assets/flags/ar.png");
                 active: root.lang-code == "ar";
                 clicked => { root.lang-selected("ar"); }
@@ -801,6 +951,7 @@ export component AppWindow inherits Window {
 
             // Панель списка
             Rectangle {
+                layout-order: I18n.ord(0);
                 width: 400px;
                 horizontal-stretch: 0;
                 vertical-stretch: 1;
@@ -822,6 +973,7 @@ export component AppWindow inherits Window {
                         text: "\{I18n.t-list-header}\{root.medicines.length}";
                         font-size: 11px;
                         font-weight: 700;
+                        horizontal-alignment: I18n.halign-start();
                         color: Theme.muted;
                         height: 22px;
                         vertical-alignment: center;
@@ -887,12 +1039,14 @@ export component AppWindow inherits Window {
             }
 
             Rectangle {
+                layout-order: I18n.ord(1);
                 width: 1px;
                 background: Theme.hairline;
             }
 
             // Детали выбранного лекарства
             Rectangle {
+                layout-order: I18n.ord(2);
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
 
@@ -914,6 +1068,7 @@ export component AppWindow inherits Window {
                         text: I18n.t-detail-hidden;
                         font-size: 11px;
                         wrap: word-wrap;
+                        horizontal-alignment: I18n.halign-start();
                         color: Theme.warn-text;
                     }
 
@@ -923,6 +1078,7 @@ export component AppWindow inherits Window {
                         name-edit := LineEdit {
                             text <=> root.detail-name;
                             font-size: 16px;
+                            horizontal-alignment: I18n.halign-start();
                             edited(text) => { root.name-edited(text); }
                             // Enter — принять первую подсказку автодополнения
                             accepted(text) => { root.suggestion-accept(); }
@@ -932,17 +1088,22 @@ export component AppWindow inherits Window {
                     HorizontalLayout {
                         spacing: 10px;
                         VerticalLayout {
+                            layout-order: I18n.ord(0);
                             spacing: 3px;
                             width: 190px;
                             FieldLabel { text: I18n.t-field-form; }
-                            ComboBox {
+                            AppComboBox {
                                 model: root.form-options;
                                 current-index <=> root.detail-form-index;
-                                selected(value) => { root.form-selected(root.detail-form-index); }
+                                selected(idx) => { root.form-selected(idx); }
                             }
                         }
-                        Rectangle { horizontal-stretch: 1; }
+                        Rectangle {
+                            layout-order: I18n.ord(1);
+                            horizontal-stretch: 1;
+                        }
                         VerticalLayout {
+                            layout-order: I18n.ord(2);
                             spacing: 3px;
                             width: 190px;
                             alignment: end;
@@ -970,6 +1131,7 @@ export component AppWindow inherits Window {
                             height: 44px;
                             vertical-stretch: 0;
                             text <=> root.detail-note;
+                            horizontal-alignment: I18n.halign-start();
                             edited(text) => { root.note-edited(text); }
                         }
                     }
@@ -980,6 +1142,7 @@ export component AppWindow inherits Window {
                         LineEdit {
                             text <=> root.detail-tags;
                             placeholder-text: I18n.t-tags-placeholder;
+                            horizontal-alignment: I18n.halign-start();
                             edited(text) => { root.tags-edited(text); }
                         }
                     }
@@ -987,21 +1150,29 @@ export component AppWindow inherits Window {
                     HorizontalLayout {
                         spacing: 8px;
                         Text {
+                            layout-order: I18n.ord(0);
                             text: root.packages-header;
                             font-size: 13px;
                             font-weight: 700;
                             vertical-alignment: center;
+                            horizontal-alignment: I18n.halign-start();
                             color: Theme.text;
                         }
                         Text {
+                            layout-order: I18n.ord(1);
                             text: I18n.t-packages-hint;
                             font-size: 11px;
                             vertical-alignment: center;
                             overflow: elide;
+                            horizontal-alignment: I18n.halign-start();
                             color: Theme.muted;
                         }
-                        Rectangle { horizontal-stretch: 1; }
+                        Rectangle {
+                            layout-order: I18n.ord(2);
+                            horizontal-stretch: 1;
+                        }
                         GhostButton {
+                            layout-order: I18n.ord(3);
                             label: root.show-disposed ? I18n.t-hide-disposed : I18n.t-show-disposed;
                             clicked => { root.toggle-show-disposed(); }
                         }
@@ -1050,17 +1221,20 @@ export component AppWindow inherits Window {
                                             spacing: 10px;
 
                                             VerticalLayout {
+                                                layout-order: I18n.ord(0);
                                                 width: 10px;
                                                 alignment: center;
                                                 StatusDot { status: StatusTheme.row-status(p.disposed, p.status); }
                                             }
                                             if (p.photo.width > 0): Image {
+                                                layout-order: I18n.ord(1);
                                                 source: p.photo;
                                                 width: 52px;
                                                 height: 58px;
                                                 image-fit: contain;
                                             }
                                             if (p.photo-missing): Rectangle {
+                                                layout-order: I18n.ord(2);
                                                 width: 52px;
                                                 height: 58px;
                                                 border-radius: 6px;
@@ -1081,11 +1255,13 @@ export component AppWindow inherits Window {
                                                 }
                                             }
                                             VerticalLayout {
+                                                layout-order: I18n.ord(3);
                                                 spacing: 3px;
                                                 horizontal-stretch: 1;
                                                 HorizontalLayout {
                                                     spacing: 8px;
                                                     Text {
+                                                        layout-order: I18n.ord(0);
                                                         text: p.expiry;
                                                         font-size: 15px;
                                                         font-weight: 700;
@@ -1093,21 +1269,26 @@ export component AppWindow inherits Window {
                                                         color: Theme.text;
                                                     }
                                                     Text {
+                                                        layout-order: I18n.ord(1);
                                                         text: p.quantity;
                                                         font-size: 12px;
                                                         vertical-alignment: center;
                                                         overflow: elide;
+                                                        horizontal-alignment: I18n.halign-start();
                                                         color: Theme.muted;
                                                         horizontal-stretch: 1;
                                                     }
                                                     Text {
+                                                        layout-order: I18n.ord(2);
                                                         text: p.price;
                                                         font-size: 12px;
                                                         vertical-alignment: center;
                                                         overflow: elide;
+                                                        horizontal-alignment: I18n.halign-start();
                                                         color: Theme.muted;
                                                     }
                                                     Badge {
+                                                        layout-order: I18n.ord(3);
                                                         status: StatusTheme.row-status(p.disposed, p.status);
                                                         text: p.days-text;
                                                     }
@@ -1115,25 +1296,31 @@ export component AppWindow inherits Window {
                                                 HorizontalLayout {
                                                     spacing: 8px;
                                                     if (p.opened-info != ""): Text {
+                                                        layout-order: I18n.ord(0);
                                                         text: p.opened-info;
                                                         font-size: 11px;
                                                         vertical-alignment: center;
+                                                        horizontal-alignment: I18n.halign-start();
                                                         color: Theme.accent;
                                                         overflow: elide;
                                                     }
                                                     Text {
+                                                        layout-order: I18n.ord(1);
                                                         text: p.note;
                                                         font-size: 12px;
                                                         overflow: elide;
+                                                        horizontal-alignment: I18n.halign-start();
                                                         color: Theme.muted;
                                                     }
                                                 }
                                             }
                                             VerticalLayout {
+                                                layout-order: I18n.ord(4);
                                                 alignment: center;
                                                 HorizontalLayout {
                                                     spacing: 6px;
                                                     if (!p.disposed && !p.opened): GhostButton {
+                                                        layout-order: I18n.ord(0);
                                                         // открытие одним кликом отмечает
                                                         // упаковку вскрытой «навсегда»
                                                         // (кнопки «не открыт» в UI нет) —
@@ -1150,29 +1337,35 @@ export component AppWindow inherits Window {
                                                         }
                                                     }
                                                     if (!p.disposed && p.opened): GhostButton {
+                                                        layout-order: I18n.ord(1);
                                                         label: I18n.t-pkg-used;
                                                         clicked => { root.pkg-dispose(p.id, 0); }
                                                     }
                                                     // выбросить можно и запечатанную
                                                     // (например, просроченную) пачку
                                                     if (!p.disposed): GhostButton {
+                                                        layout-order: I18n.ord(2);
                                                         label: I18n.t-pkg-discard;
                                                         danger: true;
                                                         clicked => { root.pkg-dispose(p.id, 1); }
                                                     }
                                                     if (!p.disposed): GhostButton {
+                                                        layout-order: I18n.ord(3);
                                                         label: I18n.t-pkg-clone;
                                                         clicked => { root.pkg-clone(p.id); }
                                                     }
                                                     if (!p.disposed): GhostButton {
+                                                        layout-order: I18n.ord(4);
                                                         label: I18n.t-pkg-edit;
                                                         clicked => { root.pkg-start-edit(p.id); }
                                                     }
                                                     if (p.disposed): GhostButton {
+                                                        layout-order: I18n.ord(5);
                                                         label: I18n.t-pkg-restore;
                                                         clicked => { root.pkg-restore(p.id); }
                                                     }
                                                     GhostButton {
+                                                        layout-order: I18n.ord(6);
                                                         // удаление — как у лекарства:
                                                         // два нажатия, между ними
                                                         // кнопка меняет текст
@@ -1231,6 +1424,7 @@ export component AppWindow inherits Window {
                                     : I18n.t-form-new;
                                 font-size: 13px;
                                 font-weight: 700;
+                                horizontal-alignment: I18n.halign-start();
                                 color: root.pkg-editing ? Theme.accent : Theme.text;
                             }
 
@@ -1239,18 +1433,22 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 spacing: 10px;
                                 VerticalLayout {
+                                    layout-order: I18n.ord(0);
                                     spacing: 3px;
                                     horizontal-stretch: 2;
                                     FieldLabel { text: I18n.t-field-expiry; }
                                     HorizontalLayout {
                                         spacing: 4px;
                                         expiry-edit := LineEdit {
+                                            layout-order: I18n.ord(0);
                                             horizontal-stretch: 1;
                                             text <=> root.pkg-expiry;
                                             placeholder-text: I18n.t-expiry-placeholder;
+                                            horizontal-alignment: I18n.halign-start();
                                             edited(text) => { root.pkg-expiry-edited(text); }
                                         }
                                         GhostButton {
+                                            layout-order: I18n.ord(1);
                                             width: 38px;
                                             label: "▼";
                                             clicked => {
@@ -1274,11 +1472,14 @@ export component AppWindow inherits Window {
                                                 HorizontalLayout {
                                                     spacing: 4px;
                                                     GhostButton {
+                                                        layout-order: I18n.ord(0);
                                                         width: 38px;
-                                                        label: "‹";
+                                                        // в RTL стрелки переворачиваются вместе с рядом
+                                                        label: I18n.rtl ? "›" : "‹";
                                                         clicked => { cal-prev-month(); }
                                                     }
                                                     Text {
+                                                        layout-order: I18n.ord(1);
                                                         text: cal-month-label;
                                                         font-size: 13px;
                                                         font-weight: 700;
@@ -1288,24 +1489,26 @@ export component AppWindow inherits Window {
                                                         color: Theme.text;
                                                     }
                                                     GhostButton {
+                                                        layout-order: I18n.ord(2);
                                                         width: 38px;
-                                                        label: "›";
+                                                        label: I18n.rtl ? "‹" : "›";
                                                         clicked => { cal-next-month(); }
                                                     }
                                                 }
                                                 HorizontalLayout {
                                                     spacing: 0;
-                                                    Text { width: 34px; text: I18n.week-days[0]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
-                                                    Text { width: 34px; text: I18n.week-days[1]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
-                                                    Text { width: 34px; text: I18n.week-days[2]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
-                                                    Text { width: 34px; text: I18n.week-days[3]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
-                                                    Text { width: 34px; text: I18n.week-days[4]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
-                                                    Text { width: 34px; text: I18n.week-days[5]; font-size: 10px; horizontal-alignment: center; color: Theme.warn-text; }
-                                                    Text { width: 34px; text: I18n.week-days[6]; font-size: 10px; horizontal-alignment: center; color: Theme.warn-text; }
+                                                    Text { layout-order: I18n.ord(0); width: 34px; text: I18n.week-days[0]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { layout-order: I18n.ord(1); width: 34px; text: I18n.week-days[1]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { layout-order: I18n.ord(2); width: 34px; text: I18n.week-days[2]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { layout-order: I18n.ord(3); width: 34px; text: I18n.week-days[3]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { layout-order: I18n.ord(4); width: 34px; text: I18n.week-days[4]; font-size: 10px; horizontal-alignment: center; color: Theme.muted; }
+                                                    Text { layout-order: I18n.ord(5); width: 34px; text: I18n.week-days[5]; font-size: 10px; horizontal-alignment: center; color: Theme.warn-text; }
+                                                    Text { layout-order: I18n.ord(6); width: 34px; text: I18n.week-days[6]; font-size: 10px; horizontal-alignment: center; color: Theme.warn-text; }
                                                 }
                                                 for row in cal-weeks: HorizontalLayout {
                                                     spacing: 0;
-                                                    for c in row.cells: Rectangle {
+                                                    for c[i] in row.cells: Rectangle {
+                                                        layout-order: I18n.ord(i);
                                                         width: 34px;
                                                         height: 32px;
                                                         cta := TouchArea {
@@ -1337,21 +1540,25 @@ export component AppWindow inherits Window {
                                     }
                                 }
                                 VerticalLayout {
+                                    layout-order: I18n.ord(1);
                                     spacing: 3px;
                                     horizontal-stretch: 1;
                                     FieldLabel { text: I18n.t-field-quantity; }
                                     LineEdit {
                                         text <=> root.pkg-quantity;
                                         placeholder-text: I18n.t-quantity-placeholder;
+                                        horizontal-alignment: I18n.halign-start();
                                     }
                                 }
                                 VerticalLayout {
+                                    layout-order: I18n.ord(2);
                                     spacing: 3px;
                                     horizontal-stretch: 1;
                                     FieldLabel { text: I18n.t-field-price; }
                                     LineEdit {
                                         text <=> root.pkg-price;
                                         placeholder-text: I18n.t-price-placeholder;
+                                        horizontal-alignment: I18n.halign-start();
                                         edited(text) => { root.pkg-form-edited(); }
                                     }
                                 }
@@ -1360,26 +1567,31 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 spacing: 10px;
                                 VerticalLayout {
+                                    layout-order: I18n.ord(0);
                                     spacing: 3px;
                                     horizontal-stretch: 1;
                                     FieldLabel { text: I18n.t-field-period; }
                                     LineEdit {
                                         text <=> root.pkg-period;
                                         placeholder-text: I18n.t-period-placeholder;
+                                        horizontal-alignment: I18n.halign-start();
                                         edited(text) => { root.pkg-form-edited(); }
                                     }
                                 }
                                 VerticalLayout {
+                                    layout-order: I18n.ord(1);
                                     spacing: 3px;
                                     horizontal-stretch: 1;
                                     FieldLabel { text: I18n.t-field-purchased; }
                                     LineEdit {
                                         text <=> root.pkg-purchase-date;
                                         placeholder-text: I18n.t-optional-placeholder;
+                                        horizontal-alignment: I18n.halign-start();
                                         edited(text) => { root.pkg-form-edited(); }
                                     }
                                 }
                                 VerticalLayout {
+                                    layout-order: I18n.ord(2);
                                     spacing: 3px;
                                     horizontal-stretch: 2;
                                     alignment: end;
@@ -1387,6 +1599,7 @@ export component AppWindow inherits Window {
                                     LineEdit {
                                         text <=> root.pkg-note;
                                         placeholder-text: I18n.t-optional-placeholder;
+                                        horizontal-alignment: I18n.halign-start();
                                     }
                                 }
                             }
@@ -1394,6 +1607,7 @@ export component AppWindow inherits Window {
                             Text {
                                 text: root.pkg-validation;
                                 font-size: 12px;
+                                horizontal-alignment: I18n.halign-start();
                                 color: root.pkg-validation-color;
                                 overflow: elide;
                             }
@@ -1401,33 +1615,43 @@ export component AppWindow inherits Window {
                             HorizontalLayout {
                                 spacing: 8px;
                                 GhostButton {
+                                    layout-order: I18n.ord(0);
                                     label: I18n.t-photo-btn;
                                     clicked => { root.pick-photo(); }
                                 }
                                 Text {
+                                    layout-order: I18n.ord(1);
                                     text: I18n.t-quick-label;
                                     font-size: 12px;
                                     vertical-alignment: center;
                                     color: Theme.muted;
                                 }
                                 GhostButton {
+                                    layout-order: I18n.ord(2);
                                     label: I18n.t-quick-6m;
                                     clicked => { root.pkg-quick(6); }
                                 }
                                 GhostButton {
+                                    layout-order: I18n.ord(3);
                                     label: I18n.t-quick-1y;
                                     clicked => { root.pkg-quick(12); }
                                 }
                                 GhostButton {
+                                    layout-order: I18n.ord(4);
                                     label: I18n.t-quick-2y;
                                     clicked => { root.pkg-quick(24); }
                                 }
-                                Rectangle { horizontal-stretch: 1; }
+                                Rectangle {
+                                    layout-order: I18n.ord(5);
+                                    horizontal-stretch: 1;
+                                }
                                 if (root.pkg-editing): GhostButton {
+                                    layout-order: I18n.ord(6);
                                     label: I18n.t-cancel;
                                     clicked => { root.pkg-cancel-edit(); }
                                 }
                                 AccentButton {
+                                    layout-order: I18n.ord(7);
                                     label: root.pkg-editing ? I18n.t-save-pkg : I18n.t-add-pkg;
                                     enabled: root.pkg-save-enabled;
                                     clicked => { root.pkg-save(); }
@@ -1473,6 +1697,7 @@ export component AppWindow inherits Window {
                                 x: 10px;
                                 width: parent.width - 20px;
                                 vertical-alignment: center;
+                                horizontal-alignment: I18n.halign-start();
                                 font-size: 13px;
                                 color: Theme.text;
                             }
@@ -1494,6 +1719,7 @@ export component AppWindow inherits Window {
                 text: root.status-message;
                 font-size: 12px;
                 wrap: word-wrap;
+                horizontal-alignment: I18n.halign-start();
                 color: Theme.danger-text;
             }
 
@@ -1501,61 +1727,75 @@ export component AppWindow inherits Window {
             spacing: 8px;
             vertical-stretch: 0;
             Text {
+                layout-order: I18n.ord(0);
                 text: I18n.t-warn-prefix;
                 font-size: 12px;
                 vertical-alignment: center;
+                horizontal-alignment: I18n.halign-start();
                 color: Theme.muted;
             }
             SpinBox {
+                layout-order: I18n.ord(1);
                 width: 95px;
                 minimum: 5;
                 maximum: 365;
                 value <=> root.warn-days;
+                horizontal-alignment: I18n.halign-start();
                 edited(value) => { root.warn-days-changed(value); }
             }
             Text {
+                layout-order: I18n.ord(2);
                 text: I18n.t-warn-suffix;
                 font-size: 12px;
                 vertical-alignment: center;
                 color: Theme.muted;
             }
             GhostButton {
+                layout-order: I18n.ord(3);
                 label: I18n.t-undo;
                 enabled: root.can-undo;
                 clicked => { root.undo-history(); }
             }
             GhostButton {
+                layout-order: I18n.ord(4);
                 label: I18n.t-redo;
                 enabled: root.can-redo;
                 clicked => { root.redo-history(); }
             }
-            Rectangle { width: 1px; height: 22px; background: Theme.hairline; }
+            Rectangle { layout-order: I18n.ord(5); width: 1px; height: 22px; background: Theme.hairline; }
             GhostButton {
+                layout-order: I18n.ord(6);
                 label: I18n.t-journal;
                 clicked => { root.open-journal(); }
             }
             GhostButton {
+                layout-order: I18n.ord(7);
                 label: I18n.t-shopping;
                 clicked => { root.open-shopping(); }
             }
             GhostButton {
+                layout-order: I18n.ord(8);
                 label: I18n.t-reports;
                 clicked => { root.open-reports(); }
             }
             GhostButton {
+                layout-order: I18n.ord(9);
                 label: I18n.t-backups;
                 clicked => { root.open-backups(); }
             }
             GhostButton {
+                layout-order: I18n.ord(10);
                 label: I18n.t-import-csv;
                 clicked => { root.open-import(); }
             }
-            Rectangle { width: 1px; height: 22px; background: Theme.hairline; }
+            Rectangle { layout-order: I18n.ord(11); width: 1px; height: 22px; background: Theme.hairline; }
             GhostButton {
+                layout-order: I18n.ord(12);
                 label: I18n.t-export-csv;
                 clicked => { root.export-csv(); }
             }
             GhostButton {
+                layout-order: I18n.ord(13);
                 label: I18n.t-theme;
                 clicked => {
                     root.theme-dark = !root.theme-dark;
@@ -1563,11 +1803,16 @@ export component AppWindow inherits Window {
                     root.theme-dark-changed(root.theme-dark);
                 }
             }
-            Rectangle { horizontal-stretch: 1; }
+            Rectangle {
+                layout-order: I18n.ord(14);
+                horizontal-stretch: 1;
+            }
             Text {
+                layout-order: I18n.ord(15);
                 text: root.status-message;
                 font-size: 12px;
                 vertical-alignment: center;
+                horizontal-alignment: I18n.halign-start();
                 overflow: elide;
                 horizontal-stretch: 2;
                 // пока ошибка показана строкой выше, здесь её не дублируем
@@ -1621,6 +1866,7 @@ export component ReportWindow inherits Window {
                             font-size: 12px;
                             vertical-alignment: center;
                             overflow: elide;
+                            horizontal-alignment: I18n.halign-start();
                             x: 8px;
                             width: parent.width - 16px;
                             color: Theme.text;
@@ -1644,7 +1890,7 @@ export component ReportWindow inherits Window {
         }
 
         HorizontalLayout {
-            alignment: end;
+            alignment: I18n.rtl ? start : end;
             Button {
                 text: I18n.t-close;
                 clicked => { root.close-clicked(); }
@@ -1694,6 +1940,7 @@ export component JournalWindow inherits Window {
                             font-size: 12px;
                             vertical-alignment: center;
                             overflow: elide;
+                            horizontal-alignment: I18n.halign-start();
                             x: 8px;
                             width: parent.width - 16px;
                             color: Theme.text;
@@ -1717,7 +1964,7 @@ export component JournalWindow inherits Window {
         }
 
         HorizontalLayout {
-            alignment: end;
+            alignment: I18n.rtl ? start : end;
             Button {
                 text: I18n.t-close;
                 clicked => { root.close-clicked(); }
@@ -1766,6 +2013,7 @@ export component ShoppingWindow inherits Window {
                     for l in root.lines: Text {
                         text: l;
                         font-size: 13px;
+                        horizontal-alignment: I18n.halign-start();
                         color: Theme.text;
                         overflow: elide;
                     }
@@ -1789,17 +2037,21 @@ export component ShoppingWindow inherits Window {
         HorizontalLayout {
             spacing: 8px;
             Text {
+                layout-order: I18n.ord(0);
                 text: root.note;
                 font-size: 12px;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
+                horizontal-alignment: I18n.halign-start();
                 color: Theme.muted;
             }
             GhostButton {
+                layout-order: I18n.ord(1);
                 label: I18n.t-shop-copy;
                 clicked => { root.copy-to-clipboard(); }
             }
             Button {
+                layout-order: I18n.ord(2);
                 text: I18n.t-close;
                 clicked => { root.close-clicked(); }
             }
@@ -1831,6 +2083,7 @@ export component BackupsWindow inherits Window {
             text: I18n.t-bak-hint;
             wrap: word-wrap;
             font-size: 12px;
+            horizontal-alignment: I18n.halign-start();
             color: Theme.muted;
         }
 
@@ -1864,6 +2117,7 @@ export component BackupsWindow inherits Window {
                             x: 10px;
                             width: parent.width - 20px;
                             vertical-alignment: center;
+                            horizontal-alignment: I18n.halign-start();
                             font-size: 13px;
                             color: root.selected == i ? Theme.accent : Theme.text;
                         }
@@ -1890,19 +2144,23 @@ export component BackupsWindow inherits Window {
         HorizontalLayout {
             spacing: 8px;
             Text {
+                layout-order: I18n.ord(0);
                 text: root.note;
                 font-size: 12px;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
+                horizontal-alignment: I18n.halign-start();
                 overflow: elide;
                 color: Theme.muted;
             }
             GhostButton {
+                layout-order: I18n.ord(1);
                 label: I18n.t-bak-restore;
                 enabled: root.selected >= 0;
                 clicked => { root.restore(root.selected); }
             }
             Button {
+                layout-order: I18n.ord(2);
                 text: I18n.t-close;
                 clicked => { root.close-clicked(); }
             }
@@ -1934,6 +2192,7 @@ export component ImportWindow inherits Window {
             text: I18n.t-imp-hint;
             wrap: word-wrap;
             font-size: 12px;
+            horizontal-alignment: I18n.halign-start();
             color: Theme.muted;
         }
 
@@ -1967,6 +2226,7 @@ export component ImportWindow inherits Window {
                             x: 10px;
                             width: parent.width - 20px;
                             vertical-alignment: center;
+                            horizontal-alignment: I18n.halign-start();
                             font-size: 13px;
                             color: root.selected == i ? Theme.accent : Theme.text;
                         }
@@ -1993,19 +2253,23 @@ export component ImportWindow inherits Window {
         HorizontalLayout {
             spacing: 8px;
             Text {
+                layout-order: I18n.ord(0);
                 text: root.note;
                 font-size: 12px;
                 vertical-alignment: center;
                 horizontal-stretch: 1;
+                horizontal-alignment: I18n.halign-start();
                 overflow: elide;
                 color: Theme.muted;
             }
             GhostButton {
+                layout-order: I18n.ord(1);
                 label: I18n.t-imp-import;
                 enabled: root.selected >= 0;
                 clicked => { root.do-import(root.selected); }
             }
             Button {
+                layout-order: I18n.ord(2);
                 text: I18n.t-close;
                 clicked => { root.close-clicked(); }
             }

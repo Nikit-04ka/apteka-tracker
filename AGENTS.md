@@ -38,6 +38,10 @@ docs/screenshot.png
 - Для zh/ja задаётся `default-font-family` (Microsoft YaHei / Yu Gothic UI):
   системный фолбэк без него подбирает японский шрифт и теряет упрощённые
   иероглифы (проверено скриншотами).
+- RTL-языки (арабский): полное зеркало раскладки через `I18n.rtl` + `I18n.ord(i)`
+  (`layout-order` ячеек HorizontalLayout) и `I18n.halign-start()` для текста/ввода.
+  Выпадающие списки — свой `AppComboBox` (стандартный ComboBox не зеркалит
+  текст и стрелку). Стрелки календаря тоже переворачиваются (`I18n.rtl ? "›" : "‹"`).
 - Статусы — `i32`-константы: `STATUS_OK=0, STATUS_SOON=1, STATUS_EXPIRED=2, STATUS_EMPTY=3`.
 - Истина — в `UiState.domain.db` (структура `Database`); UI-свойства Slint — только отображение.
 - Сохранение на диск после каждого мутационного колбэка (`persist`).

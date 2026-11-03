@@ -25,6 +25,8 @@ pub(crate) fn apply_i18n_global(g: &I18n) {
         Lang::Ja => "Yu Gothic UI",
         _ => "Segoe UI",
     }));
+    // RTL-зеркало раскладки — для языков с письмом справа налево
+    g.set_rtl(lang() == Lang::Ar);
 
     g.set_t_app_title(text(Str::AppTitle));
     g.set_t_close(text(Str::Close));
